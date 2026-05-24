@@ -1,1 +1,84 @@
 # SCA-ChillValve
+
+Distributed cooperative-control prototype for HVAC valves in tropical data centers.
+See `docs/ChillValve_Implementation_PRD_v1.md` for the full spec.
+
+## Quickstart (backend + sim)
+
+```bash
+uv sync
+uv run pytest
+uv run python scripts/plot_cv_curves.py   # writes docs/cv_curves.png
+```
+
+## Run a scenario from the CLI
+
+```bash
+uv run python -m sim.engine --mode belimo
+uv run python -m sim.engine --mode chillvalve
+uv run python -m sim.engine --mode compare
+```
+
+Per-tick JSONL timeseries lands in `data/runs/{scenario}_{mode}_{timestamp}.jsonl`.
+
+## Run the backend (FastAPI + WebSocket)
+
+```bash
+uv run uvicorn backend.main:app --port 8000
+```
+
+REST: `GET /health`, `POST /scenario/{start,pause,resume,reset}`, `POST /mode/{mode}`, `GET /history?since=N`.
+WebSocket: `/ws` streams state at 20 Hz wall-clock.
+OpenAPI: `http://localhost:8000/docs`.
+
+## Run the dashboard
+
+```bash
+cd frontend
+npm install   # first time only
+npm run dev   # http://localhost:5173
+```
+
+Backend must be running on `localhost:8000`. CORS is pre-configured for `localhost:5173`.
+
+The dashboard shows 6 valve tiles (2 branches × 3 valves) with live flow / ΔT /
+position, three-layer activity indicators (L1 rules / L2 ML / L3 coordination +
+LEADER badge), a 60-tick mini chart per valve, and a scrolling event log of
+rule fires and leader changes.
+
+### Validation scripts
+
+```bash
+uv run python scripts/validate_baseline_energy.py        # Belimo kWh / dT bands
+uv run python scripts/validate_chillvalve_vs_belimo.py   # compare modes complete
+uv run python scripts/validate_backend_e2e.py            # backend + WS smoke
+
+cd frontend && npm run test                              # vitest unit tests
+cd frontend && npm run build                             # production build
+```
+
+## Status
+
+Phase 6 (React + Vite Dashboard) — complete.
+
+- Vite + React 19 + Tailwind v3 + Zustand + Recharts + framer-motion
+- `useWebSocket` hook auto-reconnects with exponential backoff
+- `useDashboardStore` buffers 60 ticks per valve; detects rule-fire and
+  leader-change events for the log
+- ValveTile renders metrics + LEADER badge (framer-motion `layoutId` so the
+  badge animates between branch siblings on election) + L1/L2/L3 indicators
+- 12 frontend tests pass; production bundle is 627 KB / 195 KB gzipped
+
+Next: Phase 4 (ML training, pending external Colab work by the user) and
+Phase 7 (integration polish + demo recording).
+
+## Repository layout
+
+See PRD §3 for the canonical tree.
+
+## Troubleshooting
+
+- **`scikit-learn` install fails on macOS** — install Xcode CLI tools:
+  `xcode-select --install`, then `uv sync` again.
+- **Dashboard shows "disconnected"** — check that the backend is running on
+  `localhost:8000`. The dashboard auto-reconnects every 1–10 s.
