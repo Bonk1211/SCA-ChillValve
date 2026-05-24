@@ -54,7 +54,7 @@ class ChillValveController:
 
         # Layer 2: enrich each state with anomaly info.
         for s in states:
-            ar = self.layer2.evaluate(s)
+            ar = self.layer2.evaluate(s, tick_seconds=int(t_seconds))
             s.anomaly_detected = ar.anomaly_detected
             s.anomaly_confidence = ar.confidence
 
