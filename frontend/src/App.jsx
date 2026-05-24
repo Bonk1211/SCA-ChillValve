@@ -135,6 +135,37 @@ export default function App() {
     }
   };
 
+  const handleStart = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      if (engineStatus.engine === "paused") {
+        await api.resume();
+        addEvent("ctrl", "engine resumed");
+      } else if (engineStatus.engine === "idle") {
+        await fireStep(0);
+        setStepIdx(0);
+      }
+    } catch (e) {
+      addEvent("rule", `start failed: ${e?.message ?? e}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleStop = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await api.pause();
+      addEvent("ctrl", "engine paused");
+    } catch (e) {
+      addEvent("rule", `stop failed: ${e?.message ?? e}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   useEffect(() => {
     fireStep(0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -312,7 +343,10 @@ export default function App() {
         onPrev={handlePrev}
         onNext={handleNext}
         onReplay={handleReplay}
+        onStart={handleStart}
+        onStop={handleStop}
         busy={busy}
+        engineState={engineStatus.engine}
       />
     </div>
   );
