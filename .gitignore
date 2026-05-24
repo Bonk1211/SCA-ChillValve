@@ -26,3 +26,4 @@ data/models/training_metadata.json
 # Build
 dist/
 build/
+data/runs/

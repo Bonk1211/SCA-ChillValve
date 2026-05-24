@@ -1,0 +1,8 @@
+{
+  "name": "steady_state",
+  "duration_seconds": 3600,
+  "base_load_fraction": 0.70,
+  "fluctuation_amplitude": 0.05,
+  "fluctuation_period_seconds": 300,
+  "valve_ids": []
+}
