@@ -3,7 +3,7 @@
 Distributed cooperative-control prototype for HVAC valves in tropical data centers.
 See `docs/ChillValve_Implementation_PRD_v1.md` for the full spec.
 
-## Quickstart
+## Quickstart (backend + sim)
 
 ```bash
 uv sync
@@ -27,24 +27,24 @@ Per-tick JSONL timeseries lands in `data/runs/{scenario}_{mode}_{timestamp}.json
 uv run uvicorn backend.main:app --port 8000
 ```
 
-Then in another terminal:
+REST: `GET /health`, `POST /scenario/{start,pause,resume,reset}`, `POST /mode/{mode}`, `GET /history?since=N`.
+WebSocket: `/ws` streams state at 20 Hz wall-clock.
+OpenAPI: `http://localhost:8000/docs`.
+
+## Run the dashboard
 
 ```bash
-curl localhost:8000/health
-curl -X POST 'localhost:8000/scenario/start?name=steady_state&mode=chillvalve'
-curl localhost:8000/health
-# Stream live state:
-websocat ws://localhost:8000/ws    # or any WebSocket client
-curl -X POST localhost:8000/scenario/pause
-curl 'localhost:8000/history?since=0' | jq '.rows | length'
+cd frontend
+npm install   # first time only
+npm run dev   # http://localhost:5173
 ```
 
-OpenAPI spec served at `http://localhost:8000/docs`.
+Backend must be running on `localhost:8000`. CORS is pre-configured for `localhost:5173`.
 
-State is streamed at 20 Hz wall-clock (1 simulated second per 50 ms),
-operational data is batched into `data/chillvalve.db` every 5 seconds,
-and the WebSocket fan-out drops snapshots for slow consumers rather than
-blocking the engine.
+The dashboard shows 6 valve tiles (2 branches × 3 valves) with live flow / ΔT /
+position, three-layer activity indicators (L1 rules / L2 ML / L3 coordination +
+LEADER badge), a 60-tick mini chart per valve, and a scrolling event log of
+rule fires and leader changes.
 
 ### Validation scripts
 
@@ -52,19 +52,25 @@ blocking the engine.
 uv run python scripts/validate_baseline_energy.py        # Belimo kWh / dT bands
 uv run python scripts/validate_chillvalve_vs_belimo.py   # compare modes complete
 uv run python scripts/validate_backend_e2e.py            # backend + WS smoke
+
+cd frontend && npm run test                              # vitest unit tests
+cd frontend && npm run build                             # production build
 ```
 
 ## Status
 
-Phase 5 (FastAPI Backend) — complete.
+Phase 6 (React + Vite Dashboard) — complete.
 
-- `backend/db.py`: SQLite schema for operational data, anomaly events, coordination log, scenario metadata (PRD §7.3)
-- `backend/models.py`: Pydantic v2 schemas for REST + WebSocket payloads
-- `backend/orchestrator.py`: `EngineService` runs the sim as an asyncio task; `asyncio.to_thread` keeps the event loop unblocked; per-client `asyncio.Queue` fan-out drops on slow consumer
-- `backend/main.py`: FastAPI app with lifespan, REST endpoints (`/health`, `/scenario/{start,pause,resume,reset}`, `/mode/{mode}`, `/history`) and WebSocket `/ws`
-- CORS locked to `http://localhost:5173` for the upcoming Phase 6 dashboard
+- Vite + React 19 + Tailwind v3 + Zustand + Recharts + framer-motion
+- `useWebSocket` hook auto-reconnects with exponential backoff
+- `useDashboardStore` buffers 60 ticks per valve; detects rule-fire and
+  leader-change events for the log
+- ValveTile renders metrics + LEADER badge (framer-motion `layoutId` so the
+  badge animates between branch siblings on election) + L1/L2/L3 indicators
+- 12 frontend tests pass; production bundle is 627 KB / 195 KB gzipped
 
-Next: Phase 4 (ML training, pending external Colab work by the user) and Phase 6 (React + Vite dashboard).
+Next: Phase 4 (ML training, pending external Colab work by the user) and
+Phase 7 (integration polish + demo recording).
 
 ## Repository layout
 
@@ -72,4 +78,7 @@ See PRD §3 for the canonical tree.
 
 ## Troubleshooting
 
-- **`scikit-learn` install fails on macOS** — install Xcode CLI tools: `xcode-select --install`, then `uv sync` again.
+- **`scikit-learn` install fails on macOS** — install Xcode CLI tools:
+  `xcode-select --install`, then `uv sync` again.
+- **Dashboard shows "disconnected"** — check that the backend is running on
+  `localhost:8000`. The dashboard auto-reconnects every 1–10 s.
