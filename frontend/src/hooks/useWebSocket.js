@@ -8,6 +8,9 @@ export function useWebSocket(url) {
   const attemptRef = useRef(0);
   const setConnection = useDashboardStore((s) => s.setConnection);
   const pushSnapshot = useDashboardStore((s) => s.pushSnapshot);
+  const pushExplanation = useDashboardStore((s) => s.pushExplanation);
+  const pushDebate = useDashboardStore((s) => s.pushDebate);
+  const pushRemediation = useDashboardStore((s) => s.pushRemediation);
 
   useEffect(() => {
     let cancelled = false;
@@ -23,7 +26,11 @@ export function useWebSocket(url) {
       };
       ws.onmessage = (e) => {
         try {
-          pushSnapshot(JSON.parse(e.data));
+          const msg = JSON.parse(e.data);
+          if (msg.type === "explanation") pushExplanation(msg);
+          else if (msg.type === "debate") pushDebate(msg);
+          else if (msg.type === "remediation") pushRemediation(msg);
+          else pushSnapshot(msg);
         } catch {
           /* drop malformed */
         }

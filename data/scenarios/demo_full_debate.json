@@ -1,0 +1,13 @@
+{
+  "name": "demo_full_debate",
+  "duration_seconds": 200,
+  "base_load_fraction": 0.90,
+  "fluctuation_amplitude": 0.02,
+  "fluctuation_period_seconds": 300,
+  "valve_ids": [],
+  "fault_target_valve_id": "B2",
+  "fault_start_seconds": 15,
+  "fault_ramp_seconds": 45,
+  "fault_max_severity": 0.85,
+  "disable_debate": false
+}

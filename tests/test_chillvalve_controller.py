@@ -59,6 +59,7 @@ def test_layer_3_writes_is_leader_back_to_state():
 
 def test_layer_2_anomaly_flag_propagated_to_state(tmp_path):
     from pathlib import Path
+
     from sim.layers.layer2_ml import Layer2ML
     placeholder_l2 = Layer2ML(
         model_path=Path("/tmp/does_not_exist_model.pkl"),

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-const HISTORY_LIMIT = 60;
+const HISTORY_LIMIT = 120;   // ~6s at 20Hz — enough to see a fault ramp on the live chart
 const EVENT_LIMIT = 100;
 
 export const useDashboardStore = create((set, get) => ({
@@ -8,7 +8,9 @@ export const useDashboardStore = create((set, get) => ({
   latest: null,
   history: {},
   events: [],
+  debates: [],
   engineStatus: { engine: "idle", tick: 0, scenario: null, mode: null },
+  latestRemediation: null,
 
   setConnection: (c) => set({ connection: c }),
   setEngineStatus: (s) => set({ engineStatus: s }),
@@ -32,11 +34,20 @@ export const useDashboardStore = create((set, get) => ({
             text: `${v.valve_id} rule fired: ${v.rule_fired}`,
           });
         }
+        if (v.anomaly_detected && (!prev || !prev.anomaly_detected)) {
+          events.push({
+            ts: Date.now(),
+            kind: "anomaly",
+            text: `${v.valve_id} Layer-2 anomaly · conf ${(v.anomaly_confidence * 100).toFixed(0)}%`,
+          });
+        }
         if (prev && prev.is_leader !== v.is_leader) {
           const txt = v.is_leader ? `leader → ${v.valve_id}` : `${v.valve_id} stepped down`;
           events.push({
             ts: Date.now(),
             kind: "leader",
+            branch_id: v.branch_id,
+            new_leader: v.is_leader ? v.valve_id : null,
             text: `branch ${v.branch_id}: ${txt}`,
           });
         }
@@ -46,11 +57,73 @@ export const useDashboardStore = create((set, get) => ({
     set({ latest: snap, history, events });
   },
 
+  pushExplanation: (msg) => {
+    // Attach to the most recent matching leader event in the log.
+    const events = [...get().events];
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i];
+      if (
+        e.kind === "leader" &&
+        e.branch_id === msg.branch_id &&
+        e.new_leader === msg.new_leader &&
+        !e.explanation
+      ) {
+        events[i] = { ...e, explanation: msg.text };
+        set({ events });
+        return;
+      }
+    }
+    // No matching event — append a standalone explanation entry.
+    events.push({
+      ts: Date.now(),
+      kind: "leader",
+      branch_id: msg.branch_id,
+      new_leader: msg.new_leader,
+      text: `branch ${msg.branch_id}: ${msg.previous_leader ?? "(none)"} → ${msg.new_leader} (${msg.cause})`,
+      explanation: msg.text,
+    });
+    while (events.length > EVENT_LIMIT) events.shift();
+    set({ events });
+  },
+
   addEvent: (kind, text) => {
     const events = [...get().events, { ts: Date.now(), kind, text }];
     while (events.length > EVENT_LIMIT) events.shift();
     set({ events });
   },
 
-  reset: () => set({ latest: null, history: {}, events: [] }),
+  pushDebate: (msg) => {
+    const debates = [...get().debates, msg];
+    while (debates.length > 30) debates.shift();   // keep last 30 transcripts
+    const allocSummary = Object.entries(msg.allocations || {})
+      .map(([vid, pos]) => `${vid}=${Number(pos).toFixed(0)}%`)
+      .join(", ");
+    const events = [...get().events, {
+      ts: Date.now(),
+      kind: "debate",
+      text: `branch ${msg.branch_id} debate (${msg.leader_id} leader): ${allocSummary} — ${msg.rationale}`,
+    }];
+    while (events.length > EVENT_LIMIT) events.shift();
+    set({ debates, events });
+  },
+
+  pushRemediation: (msg) => {
+    const actionLabel = (msg.action || "").replaceAll("_", " ").toUpperCase();
+    const events = [...get().events, {
+      ts: Date.now(),
+      kind: "remediation",
+      text: `${msg.target_valve_id} · LEADER → ${actionLabel}${msg.executed ? "" : " (recorded only)"} — ${msg.rationale}`,
+    }];
+    while (events.length > EVENT_LIMIT) events.shift();
+    set({ events, latestRemediation: msg });
+  },
+
+  reset: () =>
+    set({
+      latest: null,
+      history: {},
+      events: [],
+      debates: [],
+      latestRemediation: null,
+    }),
 }));

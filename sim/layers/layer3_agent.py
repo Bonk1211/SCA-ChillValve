@@ -39,6 +39,7 @@ class ValveAgent:
     broker: MessageBroker
     peer_states: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     is_leader: bool = False
+    is_dead: bool = False
     last_leader_heartbeat: float = 0.0
     last_collected_at: float = -1.0
     last_setpoint_broadcast_at: float = -1e9
@@ -56,6 +57,8 @@ class ValveAgent:
 
     # --- Phase A: broadcast own state ---
     def broadcast_state(self, my_state: ValveState, t_seconds: float) -> None:
+        if self.is_dead:
+            return
         self.broker.broadcast(
             self._state_channel(),
             self.valve_id,
@@ -72,6 +75,8 @@ class ValveAgent:
 
     # --- Phase B: collect peer messages, run election + leader logic ---
     def process(self, all_valve_ids: List[str], t_seconds: float) -> None:
+        if self.is_dead:
+            return
         for msg in self.broker.collect(self._state_channel(), self.last_collected_at, t_seconds):
             if msg.sender_id != self.valve_id:
                 self.peer_states[msg.sender_id] = msg.payload

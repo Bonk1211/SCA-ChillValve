@@ -14,6 +14,9 @@ uv run python scripts/plot_cv_curves.py   # writes docs/cv_curves.png
 ## Run a scenario from the CLI
 
 ```bash
+# Scenarios: `steady_state` (60 min benign) or `fault_injection` (30 min, B2 fouling)
+uv run python -m sim.engine --scenario steady_state --mode belimo
+uv run python -m sim.engine --scenario fault_injection --mode chillvalve
 uv run python -m sim.engine --mode belimo
 uv run python -m sim.engine --mode chillvalve
 uv run python -m sim.engine --mode compare
@@ -59,7 +62,7 @@ cd frontend && npm run build                             # production build
 
 ## Status
 
-Phase 6 (React + Vite Dashboard) — complete.
+Phase 7 (Integration & Polish) — complete.
 
 - Vite + React 19 + Tailwind v3 + Zustand + Recharts + framer-motion
 - `useWebSocket` hook auto-reconnects with exponential backoff
@@ -75,6 +78,57 @@ Phase 7 (integration polish + demo recording).
 ## Repository layout
 
 See PRD §3 for the canonical tree.
+
+
+## Environment
+
+```bash
+cp .env.example .env
+# Edit .env to set GEMINI_API_KEY, CHILLVALVE_TICK_PERIOD_S, etc.
+```
+
+`.env` is auto-loaded by `sim/_env.py` on import of `sim.engine`,
+`backend.main`, or `backend.explainer`. `.env` is gitignored; never
+committed. The `.env.example` template lists every variable the codebase
+reads.
+
+Supported variables:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `GEMINI_API_KEY` or `GOOGLE_API_KEY` | (unset) | Enable LLM leader-event narration. Without it the explainer falls back to deterministic templates. |
+| `CHILLVALVE_TICK_PERIOD_S` | `0.05` | Wall-clock seconds per simulated second. Lower = faster demo playback. |
+| `CHILLVALVE_DB_PATH` | `data/chillvalve.db` | SQLite path. |
+
+### Optional: LLM event narration + multi-agent debate
+
+Two LLM features, both Gemini 2.5 Flash, both off without an API key:
+
+1. **Event narration** — leader-election events get a one-sentence
+   explanation in the dashboard event log.
+2. **Multi-agent debate** (Layer 3 replacement) — when Layer 2's
+   anomaly confidence sits in the uncertain band `[0.30, 0.85]` for a
+   branch, the valves debate. Each peer speaks once in parallel, the
+   elected leader synthesizes per-valve position allocations.
+   Cooldown: 30 sim-seconds per branch. State-hash cached so similar
+   conditions don't re-bill. Transcripts render in the dashboard's
+   Debate Panel.
+
+Layer 1 still validates the final command — the debate recommends, it
+never bypasses safety.
+
+```bash
+echo "GEMINI_API_KEY=your_key" >> .env
+uv run uvicorn backend.main:app --port 8000
+```
+
+Without a key, the explainer uses deterministic text and the debate
+silently falls back to deterministic Layer 3 (priority-based allocation
+by the elected leader).
+
+The LLM is operator-facing only. It does **not** participate in the
+control loop — Layer 1 rules, Layer 2 ML, and Layer 3 election all run
+identically regardless of whether explanations are enabled.
 
 ## Troubleshooting
 

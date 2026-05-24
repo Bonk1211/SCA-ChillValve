@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+import sim._env  # noqa: F401  — auto-loads .env
 from sim.coil import Coil
 from sim.controllers.belimo_baseline import BelimoController
 from sim.controllers.chillvalve import ChillValveController
@@ -75,6 +76,7 @@ def _run_single(
                 design_dT_C=rec.coil.design_dT_C,
                 load_fraction=scenario.load_fraction(rec.valve_id, t),
             )
+            system.set_fault_severity(rec.valve_id, scenario.fault_severity(rec.valve_id, t))
 
         # 1. Observe current state.
         states = system.tick(t)

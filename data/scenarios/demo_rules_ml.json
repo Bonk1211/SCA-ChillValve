@@ -1,0 +1,13 @@
+{
+  "name": "demo_rules_ml",
+  "duration_seconds": 90,
+  "base_load_fraction": 0.90,
+  "fluctuation_amplitude": 0.02,
+  "fluctuation_period_seconds": 300,
+  "valve_ids": [],
+  "fault_target_valve_id": "B2",
+  "fault_start_seconds": 10,
+  "fault_ramp_seconds": 2,
+  "fault_max_severity": 0.98,
+  "disable_debate": true
+}
