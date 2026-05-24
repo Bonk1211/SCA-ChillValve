@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# uv / venv
+.venv/
+
+# Data — never commit raw LBNL or runtime DB
+data/lbnl_raw/
+data/lbnl_processed/
+data/chillvalve.db
+data/models/*.pkl
+data/models/training_metadata.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Build
+dist/
+build/
