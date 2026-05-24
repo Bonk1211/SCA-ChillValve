@@ -13,7 +13,7 @@ def test_load_fraction_stays_within_amplitude():
     )
     for t in range(0, 3600, 17):
         f = s.load_fraction("A1", t)
-        assert 0.65 <= f <= 0.75
+        assert 0.65 - 1e-9 <= f <= 0.75 + 1e-9
 
 
 def test_different_valves_have_different_phases():

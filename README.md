@@ -11,41 +11,60 @@ uv run pytest
 uv run python scripts/plot_cv_curves.py   # writes docs/cv_curves.png
 ```
 
-## Run a scenario
+## Run a scenario from the CLI
 
 ```bash
-# Belimo Energy Valve baseline
-uv run python -m sim.engine --scenario steady_state --mode belimo
-
-# ChillValve three-layer controller (Layer 1 rules + Layer 2 ML placeholder + Layer 3 multi-agent)
-uv run python -m sim.engine --scenario steady_state --mode chillvalve
-
-# Side-by-side comparison
-uv run python -m sim.engine --scenario steady_state --mode compare
+uv run python -m sim.engine --mode belimo
+uv run python -m sim.engine --mode chillvalve
+uv run python -m sim.engine --mode compare
 ```
 
-Per-tick JSONL timeseries lands in `data/runs/{scenario}_{mode}_{timestamp}.jsonl`,
-including pump kW, per-valve flow/ΔT/position, Layer 1 rule fires, Layer 2 anomaly flags,
-and Layer 3 leader assignments.
+Per-tick JSONL timeseries lands in `data/runs/{scenario}_{mode}_{timestamp}.jsonl`.
+
+## Run the backend (FastAPI + WebSocket)
+
+```bash
+uv run uvicorn backend.main:app --port 8000
+```
+
+Then in another terminal:
+
+```bash
+curl localhost:8000/health
+curl -X POST 'localhost:8000/scenario/start?name=steady_state&mode=chillvalve'
+curl localhost:8000/health
+# Stream live state:
+websocat ws://localhost:8000/ws    # or any WebSocket client
+curl -X POST localhost:8000/scenario/pause
+curl 'localhost:8000/history?since=0' | jq '.rows | length'
+```
+
+OpenAPI spec served at `http://localhost:8000/docs`.
+
+State is streamed at 20 Hz wall-clock (1 simulated second per 50 ms),
+operational data is batched into `data/chillvalve.db` every 5 seconds,
+and the WebSocket fan-out drops snapshots for slow consumers rather than
+blocking the engine.
 
 ### Validation scripts
 
 ```bash
-uv run python scripts/validate_baseline_energy.py        # asserts Belimo kWh + dT bands
-uv run python scripts/validate_chillvalve_vs_belimo.py   # asserts both modes complete + report delta
+uv run python scripts/validate_baseline_energy.py        # Belimo kWh / dT bands
+uv run python scripts/validate_chillvalve_vs_belimo.py   # compare modes complete
+uv run python scripts/validate_backend_e2e.py            # backend + WS smoke
 ```
 
 ## Status
 
-Phase 3 (Three-Layer Intelligence) — complete.
+Phase 5 (FastAPI Backend) — complete.
 
-- **Layer 1**: 5 deterministic rules per PRD §5.1 (position clamp, flow ceiling, dP failsafe, sensor validity, actuator timeout) + `validate_command` helper
-- **Layer 2**: placeholder returning benign `AnomalyResult` (Phase 4 swaps in the trained Isolation Forest)
-- **Layer 3**: in-process pub/sub broker + per-valve `ValveAgent` with two-phase tick (broadcast → process), bully leader election, leader-driven priority-based setpoint allocation
-- **ChillValveController**: orchestrates all three layers per PRD §6 (Layer 1 override → Layer 2 enrich → Layer 3 setpoint → Layer 1 validate)
-- **engine.py**: extended with `--mode chillvalve` and `--mode compare`; compare prints the delta line
+- `backend/db.py`: SQLite schema for operational data, anomaly events, coordination log, scenario metadata (PRD §7.3)
+- `backend/models.py`: Pydantic v2 schemas for REST + WebSocket payloads
+- `backend/orchestrator.py`: `EngineService` runs the sim as an asyncio task; `asyncio.to_thread` keeps the event loop unblocked; per-client `asyncio.Queue` fan-out drops on slow consumer
+- `backend/main.py`: FastAPI app with lifespan, REST endpoints (`/health`, `/scenario/{start,pause,resume,reset}`, `/mode/{mode}`, `/history`) and WebSocket `/ws`
+- CORS locked to `http://localhost:5173` for the upcoming Phase 6 dashboard
 
-Next: Phase 4 (ML training pipeline: download LBNL dataset, train Isolation Forest, swap into Layer 2).
+Next: Phase 4 (ML training, pending external Colab work by the user) and Phase 6 (React + Vite dashboard).
 
 ## Repository layout
 
