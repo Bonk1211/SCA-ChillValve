@@ -47,10 +47,17 @@ class ChillValveController:
         self._initialized_at = t_seconds
 
     def step(
-        self, states: List[ValveState], t_seconds: float
+        self,
+        states: List[ValveState],
+        t_seconds: float,
+        debate_overrides: Dict[str, float] = None,
     ) -> Dict[str, ValveCommand]:
+        """If debate_overrides is set, it maps valve_id → position_pct that
+        replaces the agent's own setpoint (and the local-PID fallback) for
+        the listed valves. Layer 1 still validates the final value."""
         all_ids = [s.valve_id for s in states]
         commands: Dict[str, ValveCommand] = {}
+        debate_overrides = debate_overrides or {}
 
         # Layer 2: enrich each state with anomaly info.
         for s in states:
@@ -81,12 +88,16 @@ class ChillValveController:
                 s.rule_fired = rule_action.reason
 
             agent = self.agents[s.valve_id]
-            setpoint = agent.consume_setpoint()
-            if setpoint is not None:
-                pos = setpoint
+            if s.valve_id in debate_overrides:
+                pos = debate_overrides[s.valve_id]
+                s.coordination_setpoint = pos
             else:
-                err = s.dT_C - LOCAL_PID_TARGET_DT
-                pos = s.position_pct + err * LOCAL_PID_GAIN
+                setpoint = agent.consume_setpoint()
+                if setpoint is not None:
+                    pos = setpoint
+                else:
+                    err = s.dT_C - LOCAL_PID_TARGET_DT
+                    pos = s.position_pct + err * LOCAL_PID_GAIN
 
             pos = self.layer1.validate_command(pos, s)
             commands[s.valve_id] = ValveCommand(position_pct=pos, override=False)
