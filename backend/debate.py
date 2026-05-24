@@ -36,7 +36,7 @@ import sim._env  # noqa: F401
 
 log = logging.getLogger(__name__)
 
-MODEL = "gemini-2.5-flash"
+MODEL = "gemini-3.1-flash-lite"
 DEBATE_COOLDOWN_S = 30.0     # sim-seconds per branch
 PEER_SPEECH_MAX_TOKENS = 80
 LEADER_SYNTHESIS_MAX_TOKENS = 250

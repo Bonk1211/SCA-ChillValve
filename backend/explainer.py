@@ -26,7 +26,7 @@ import sim._env  # noqa: F401  — auto-loads .env
 
 log = logging.getLogger(__name__)
 
-MODEL = "gemini-2.5-flash"
+MODEL = "gemini-3.1-flash-lite"
 
 SYSTEM_PROMPT = (
     "You are an HVAC operator's assistant. You narrate leader-election events "
