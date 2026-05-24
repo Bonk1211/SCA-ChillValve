@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from backend.explainer import Explainer
 from sim.coil import Coil
 from sim.controllers.belimo_baseline import BelimoController
 from sim.controllers.chillvalve import ChillValveController
@@ -41,6 +42,9 @@ class EngineService:
     _op_buffer: List[tuple] = field(default_factory=list, repr=False)
     _last_flush_at: float = 0.0
     _db_writer: Optional[Callable[[List[tuple]], None]] = field(default=None, repr=False)
+    _explainer: Explainer = field(default_factory=Explainer, repr=False)
+    _last_leaders: Dict[str, Optional[str]] = field(default_factory=dict, repr=False)
+    _killed_recently: Dict[str, float] = field(default_factory=dict, repr=False)
 
     def attach_db_writer(self, writer: Callable[[List[tuple]], None]) -> None:
         self._db_writer = writer
@@ -128,6 +132,8 @@ class EngineService:
         for vid, ag in agents.items():
             if vid != valve_id and ag.branch_id == target_branch:
                 ag.last_leader_heartbeat = -1e9
+        # Mark the branch so the next leader-change explanation knows the cause.
+        self._killed_recently[target_branch] = float(self._tick)
 
     async def set_mode(self, mode: str) -> None:
         if mode not in ("belimo", "chillvalve"):
@@ -163,6 +169,7 @@ class EngineService:
                 continue
             snapshot = await asyncio.to_thread(self._tick_once)
             await self._fanout(snapshot)
+            await self._detect_leader_changes(snapshot)
             if self._db_writer is not None:
                 self._buffer_operational(snapshot)
                 if time.monotonic() - self._last_flush_at >= OP_FLUSH_INTERVAL_S:
@@ -232,6 +239,53 @@ class EngineService:
                 v["flow_gpm"], v["dT_C"], v["position_pct"],
                 snapshot["pump_head_kpa"], mode,
             ))
+
+    async def _detect_leader_changes(self, snapshot: Dict[str, Any]) -> None:
+        """Compare current leader per branch against last snapshot; spawn an
+        async explanation task on transitions. Non-blocking."""
+        current: Dict[str, Optional[str]] = {}
+        for v in snapshot["valves"]:
+            branch = v["branch_id"]
+            if v["is_leader"]:
+                current[branch] = v["valve_id"]
+            current.setdefault(branch, None)
+        for branch, new_leader in current.items():
+            prev = self._last_leaders.get(branch)
+            if new_leader != prev and new_leader is not None:
+                cause = "killed" if branch in self._killed_recently else (
+                    "boot" if prev is None else "election"
+                )
+                self._killed_recently.pop(branch, None)
+                asyncio.create_task(
+                    self._explain_and_fanout(branch, prev, new_leader, cause, snapshot["tick"])
+                )
+            # Only update when a leader exists; leaderless interim preserves the
+            # previous leader so the next election's explanation has the right
+            # "previous_leader" attribution.
+            if new_leader is not None:
+                self._last_leaders[branch] = new_leader
+
+    async def _explain_and_fanout(
+        self, branch_id: str, prev: Optional[str], new_leader: str, cause: str, tick: int
+    ) -> None:
+        text = await self._explainer.explain_leader_change(
+            branch_id, prev, new_leader, cause, float(tick)
+        )
+        msg = {
+            "type": "explanation",
+            "kind": "leader",
+            "branch_id": branch_id,
+            "previous_leader": prev,
+            "new_leader": new_leader,
+            "cause": cause,
+            "tick": tick,
+            "text": text,
+        }
+        for q in self._subscribers:
+            try:
+                q.put_nowait(msg)
+            except asyncio.QueueFull:
+                pass
 
     async def _fanout(self, snapshot: Dict[str, Any]) -> None:
         for q in self._subscribers:

@@ -24,10 +24,17 @@ export default function EventLog() {
         <div className={`text-xs ${colors.textSec}`}>(no events yet)</div>
       ) : (
         events.map((e, i) => (
-          <div key={i} className="text-xs font-mono">
-            <span className={colors.textSec}>{new Date(e.ts).toLocaleTimeString()}</span>{" "}
-            <KindBadge kind={e.kind} />{" "}
-            <span className={colors.textPrim}>{e.text}</span>
+          <div key={i} className="text-xs font-mono mb-1">
+            <div>
+              <span className={colors.textSec}>{new Date(e.ts).toLocaleTimeString()}</span>{" "}
+              <KindBadge kind={e.kind} />{" "}
+              <span className={colors.textPrim}>{e.text}</span>
+            </div>
+            {e.explanation && (
+              <div className={`pl-3 text-[11px] italic ${colors.textSec}`}>
+                ↳ {e.explanation}
+              </div>
+            )}
           </div>
         ))
       )}

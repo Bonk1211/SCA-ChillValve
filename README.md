@@ -79,6 +79,23 @@ Phase 7 (integration polish + demo recording).
 
 See PRD §3 for the canonical tree.
 
+
+## Optional: LLM event narration
+
+Leader-election events get an LLM-generated one-line explanation in the
+dashboard event log when a Gemini API key is configured. Without a key,
+the explainer falls back to a deterministic template — everything else
+keeps working.
+
+```bash
+export GEMINI_API_KEY=your_key   # or GOOGLE_API_KEY
+uv run uvicorn backend.main:app --port 8000
+```
+
+The LLM is operator-facing only. It does **not** participate in the
+control loop — Layer 1 rules, Layer 2 ML, and Layer 3 election all run
+identically regardless of whether explanations are enabled.
+
 ## Troubleshooting
 
 - **`scikit-learn` install fails on macOS** — install Xcode CLI tools:
