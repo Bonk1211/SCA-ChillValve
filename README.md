@@ -100,17 +100,31 @@ Supported variables:
 | `CHILLVALVE_TICK_PERIOD_S` | `0.05` | Wall-clock seconds per simulated second. Lower = faster demo playback. |
 | `CHILLVALVE_DB_PATH` | `data/chillvalve.db` | SQLite path. |
 
-### Optional: LLM event narration
+### Optional: LLM event narration + multi-agent debate
 
-Leader-election events get an LLM-generated one-line explanation in the
-dashboard event log when a Gemini API key is configured. Without a key,
-the explainer falls back to a deterministic template — everything else
-keeps working.
+Two LLM features, both Gemini 2.5 Flash, both off without an API key:
+
+1. **Event narration** — leader-election events get a one-sentence
+   explanation in the dashboard event log.
+2. **Multi-agent debate** (Layer 3 replacement) — when Layer 2's
+   anomaly confidence sits in the uncertain band `[0.30, 0.85]` for a
+   branch, the valves debate. Each peer speaks once in parallel, the
+   elected leader synthesizes per-valve position allocations.
+   Cooldown: 30 sim-seconds per branch. State-hash cached so similar
+   conditions don't re-bill. Transcripts render in the dashboard's
+   Debate Panel.
+
+Layer 1 still validates the final command — the debate recommends, it
+never bypasses safety.
 
 ```bash
 echo "GEMINI_API_KEY=your_key" >> .env
 uv run uvicorn backend.main:app --port 8000
 ```
+
+Without a key, the explainer uses deterministic text and the debate
+silently falls back to deterministic Layer 3 (priority-based allocation
+by the elected leader).
 
 The LLM is operator-facing only. It does **not** participate in the
 control loop — Layer 1 rules, Layer 2 ML, and Layer 3 election all run

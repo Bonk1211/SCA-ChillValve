@@ -1,7 +1,7 @@
 """API schemas for the ChillValve backend."""
 from __future__ import annotations
 
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel
 
@@ -80,3 +80,23 @@ class WSExplanationMessage(BaseModel):
     cause: str
     tick: int
     text: str
+
+
+class DebateSpeech(BaseModel):
+    valve_id: str
+    text: str
+
+
+class WSDebateMessage(BaseModel):
+    """Multi-agent LLM debate transcript. Replaces deterministic Layer 3
+    setpoints for a branch when Layer 2's confidence is in the uncertain
+    band. Layer 1 still validates the resulting commands."""
+    type: Literal["debate"] = "debate"
+    branch_id: str
+    tick: int
+    leader_id: str
+    speeches: List[DebateSpeech]
+    allocations: Dict[str, float]
+    rationale: str
+    cached: bool
+    wall_clock_s: float

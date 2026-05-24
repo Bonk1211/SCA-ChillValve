@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from backend.debate import DebateRunner, is_uncertain_branch
 from backend.explainer import Explainer
 from sim.coil import Coil
 from sim.controllers.belimo_baseline import BelimoController
@@ -45,6 +46,9 @@ class EngineService:
     _explainer: Explainer = field(default_factory=Explainer, repr=False)
     _last_leaders: Dict[str, Optional[str]] = field(default_factory=dict, repr=False)
     _killed_recently: Dict[str, float] = field(default_factory=dict, repr=False)
+    _debate: DebateRunner = field(default_factory=DebateRunner, repr=False)
+    _debate_overrides: Dict[str, float] = field(default_factory=dict, repr=False)
+    _debate_in_flight: Dict[str, bool] = field(default_factory=dict, repr=False)
 
     def attach_db_writer(self, writer: Callable[[List[tuple]], None]) -> None:
         self._db_writer = writer
@@ -170,6 +174,8 @@ class EngineService:
             snapshot = await asyncio.to_thread(self._tick_once)
             await self._fanout(snapshot)
             await self._detect_leader_changes(snapshot)
+            if self._mode == "chillvalve":
+                await self._maybe_run_debate(snapshot)
             if self._db_writer is not None:
                 self._buffer_operational(snapshot)
                 if time.monotonic() - self._last_flush_at >= OP_FLUSH_INTERVAL_S:
@@ -201,7 +207,11 @@ class EngineService:
         if self._mode == "belimo":
             commands = self._controller.step(states)  # type: ignore[union-attr]
         else:
-            commands = self._controller.step(states, t_seconds=float(t))  # type: ignore[union-attr]
+            overrides = dict(self._debate_overrides)
+            self._debate_overrides.clear()  # one-shot — applied this tick only
+            commands = self._controller.step(
+                states, t_seconds=float(t), debate_overrides=overrides,
+            )  # type: ignore[union-attr]
         self._system.set_positions(commands)
         total_flow = self._system.solve_network()
         head = self._system.pump.head_kpa(total_flow)
@@ -239,6 +249,60 @@ class EngineService:
                 v["flow_gpm"], v["dT_C"], v["position_pct"],
                 snapshot["pump_head_kpa"], mode,
             ))
+
+    async def _maybe_run_debate(self, snapshot: Dict[str, Any]) -> None:
+        """Per-branch: if Layer 2 confidence is in the uncertain band and the
+        branch isn't already debating and cooldown has elapsed, spawn a
+        debate task. Result lands in self._debate_overrides for the next
+        controller.step to consume."""
+        branches: Dict[str, List[Dict[str, Any]]] = {}
+        for v in snapshot["valves"]:
+            branches.setdefault(v["branch_id"], []).append(v)
+        for branch_id, valves in branches.items():
+            if self._debate_in_flight.get(branch_id):
+                continue
+            if not is_uncertain_branch(valves):
+                continue
+            if not self._debate.can_debate(branch_id, float(snapshot["tick"])):
+                continue
+            leader = next((v["valve_id"] for v in valves if v["is_leader"]), None)
+            if leader is None:
+                continue
+            self._debate_in_flight[branch_id] = True
+            asyncio.create_task(
+                self._run_and_apply_debate(branch_id, leader, valves, snapshot["tick"])
+            )
+
+    async def _run_and_apply_debate(
+        self, branch_id: str, leader_id: str,
+        valves: List[Dict[str, Any]], tick: int,
+    ) -> None:
+        try:
+            round_ = await self._debate.run(branch_id, leader_id, valves, float(tick))
+            if round_ is None:
+                return
+            # Stage allocations so the next tick's controller.step picks them up.
+            for vid, pos in round_.allocations.items():
+                self._debate_overrides[vid] = pos
+            # Fan out the debate transcript so the dashboard can render it.
+            msg = {
+                "type": "debate",
+                "branch_id": round_.branch_id,
+                "tick": round_.tick,
+                "leader_id": leader_id,
+                "speeches": round_.speeches,
+                "allocations": round_.allocations,
+                "rationale": round_.rationale,
+                "cached": round_.cached,
+                "wall_clock_s": round(round_.wall_clock_s, 2),
+            }
+            for q in self._subscribers:
+                try:
+                    q.put_nowait(msg)
+                except asyncio.QueueFull:
+                    pass
+        finally:
+            self._debate_in_flight[branch_id] = False
 
     async def _detect_leader_changes(self, snapshot: Dict[str, Any]) -> None:
         """Compare current leader per branch against last snapshot; spawn an

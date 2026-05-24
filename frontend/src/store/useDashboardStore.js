@@ -8,6 +8,7 @@ export const useDashboardStore = create((set, get) => ({
   latest: null,
   history: {},
   events: [],
+  debates: [],
   engineStatus: { engine: "idle", tick: 0, scenario: null, mode: null },
 
   setConnection: (c) => set({ connection: c }),
@@ -83,5 +84,11 @@ export const useDashboardStore = create((set, get) => ({
     set({ events });
   },
 
-  reset: () => set({ latest: null, history: {}, events: [] }),
+  pushDebate: (msg) => {
+    const debates = [...get().debates, msg];
+    while (debates.length > 30) debates.shift();   // keep last 30 transcripts
+    set({ debates });
+  },
+
+  reset: () => set({ latest: null, history: {}, events: [], debates: [] }),
 }));

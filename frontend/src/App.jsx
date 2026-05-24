@@ -4,6 +4,7 @@ import { useDashboardStore } from "./store/useDashboardStore";
 import { api } from "./lib/api";
 import DashboardGrid from "./components/DashboardGrid";
 import EventLog from "./components/EventLog";
+import DebatePanel from "./components/DebatePanel";
 import ScenarioControls from "./components/ScenarioControls";
 import ModeToggle from "./components/ModeToggle";
 import { colors } from "./lib/colors";
@@ -64,6 +65,7 @@ export default function App() {
         <aside className="flex flex-col gap-3">
           <h3 className={`text-xs uppercase ${colors.textSec}`}>Event log</h3>
           <EventLog />
+          <DebatePanel />
         </aside>
       </main>
     </div>

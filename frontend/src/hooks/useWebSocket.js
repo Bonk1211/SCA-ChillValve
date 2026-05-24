@@ -9,6 +9,7 @@ export function useWebSocket(url) {
   const setConnection = useDashboardStore((s) => s.setConnection);
   const pushSnapshot = useDashboardStore((s) => s.pushSnapshot);
   const pushExplanation = useDashboardStore((s) => s.pushExplanation);
+  const pushDebate = useDashboardStore((s) => s.pushDebate);
 
   useEffect(() => {
     let cancelled = false;
@@ -26,6 +27,7 @@ export function useWebSocket(url) {
         try {
           const msg = JSON.parse(e.data);
           if (msg.type === "explanation") pushExplanation(msg);
+          else if (msg.type === "debate") pushDebate(msg);
           else pushSnapshot(msg);
         } catch {
           /* drop malformed */
