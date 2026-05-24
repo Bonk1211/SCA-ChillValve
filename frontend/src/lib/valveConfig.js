@@ -14,11 +14,3 @@ export const VALVE_BY_ID = Object.fromEntries(VALVES.map((v) => [v.id, v]));
 export const TARGET_DT_C = 5.0;
 export const DT_TOLERANCE_C = 0.7;
 
-// Market-reference pump power for a Belimo PICV / Energy Valve-controlled
-// loop at the same design conditions (≈460 GPM, ≈165 kPa head). Derived from
-// Belimo EV/EPIV product datasheet typical pump-power figures for a 5 MW DC
-// chilled-water loop with conventional valve coordination. Used only as a
-// static reference for the ENERGY SAVINGS KPI — adjust if you cite a
-// different Belimo product line in the demo.
-export const BELIMO_REFERENCE_KW = 20.5;
-

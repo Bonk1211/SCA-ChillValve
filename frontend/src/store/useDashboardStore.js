@@ -11,6 +11,7 @@ export const useDashboardStore = create((set, get) => ({
   debates: [],
   engineStatus: { engine: "idle", tick: 0, scenario: null, mode: null },
   latestRemediation: null,
+  latestSummary: null,
 
   setConnection: (c) => set({ connection: c }),
   setEngineStatus: (s) => set({ engineStatus: s }),
@@ -107,6 +108,19 @@ export const useDashboardStore = create((set, get) => ({
     set({ debates, events });
   },
 
+  pushSummary: (msg) => {
+    // End-of-run energy summary — measured pump-kW per phase + recovery
+    // savings. Stored separately from events so the SummaryBanner can show
+    // it indefinitely after engine goes idle.
+    const events = [...get().events, {
+      ts: Date.now(),
+      kind: "story",
+      text: `scenario complete · ${msg.total_kwh.toFixed(3)} kWh total · L3 recovery saved ${msg.recovery_savings_kwh.toFixed(3)} kWh`,
+    }];
+    while (events.length > EVENT_LIMIT) events.shift();
+    set({ events, latestSummary: msg });
+  },
+
   pushRemediation: (msg) => {
     const actionLabel = (msg.action || "").replaceAll("_", " ").toUpperCase();
     const events = [...get().events, {
@@ -125,5 +139,6 @@ export const useDashboardStore = create((set, get) => ({
       events: [],
       debates: [],
       latestRemediation: null,
+      latestSummary: null,
     }),
 }));

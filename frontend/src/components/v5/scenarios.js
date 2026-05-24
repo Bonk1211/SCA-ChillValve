@@ -20,7 +20,7 @@ export const SCENARIOS = [
       "t≈35-45s : L1 dP rule trips red on B2 → safety override forces close",
       "t≈40s+ : B1 + B3 sparklines climb as peers pick up B2's load",
       "t≈90s+ : ΔT compliance KPI recovers without operator action",
-      "vs Belimo : pump-kW savings widen as peers redistribute load",
+      "t≈100s+ : LLM recovery decision restores B2 flow autonomously",
     ],
   },
 ];

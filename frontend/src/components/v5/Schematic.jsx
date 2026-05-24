@@ -1,5 +1,6 @@
 import { useDashboardStore } from "../../store/useDashboardStore";
 import { VALVE_BY_ID, VALVES } from "../../lib/valveConfig";
+import { isImpaired } from "../../lib/impairment";
 
 const EMPTY_VALVES = VALVES.map((v) => ({
   valve_id: v.id,
@@ -45,10 +46,10 @@ function Valve({ x, y, valve, onClick, selected }) {
   const pos = valve.position_pct / 100;
   const angle = 90 - pos * 90;
   const stateColor = valve.safety_override_active
-    ? "#f87171"
-    : valve.anomaly_detected
-    ? "#fbbf24"
-    : "#34d399";
+    ? "#f87171"           // red — Layer 1 emergency override
+    : isImpaired(valve)
+    ? "#fbbf24"           // amber — flow below design OR L2 confidence > 0.4
+    : "#34d399";          // green — nominal
   const leaderGlow = valve.is_leader ? "drop-shadow(0 0 6px rgba(34, 211, 238, 0.7))" : "none";
   return (
     <g transform={`translate(${x}, ${y})`} style={{ cursor: "pointer" }} onClick={onClick}>

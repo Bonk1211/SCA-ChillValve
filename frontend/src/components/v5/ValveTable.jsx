@@ -1,5 +1,6 @@
 import { useDashboardStore } from "../../store/useDashboardStore";
 import { VALVE_BY_ID, TARGET_DT_C, DT_TOLERANCE_C } from "../../lib/valveConfig";
+import { isImpaired } from "../../lib/impairment";
 
 const hdrSt = {
   fontSize: 9,
@@ -55,7 +56,7 @@ export default function ValveTable({ selectedId, onSelect }) {
 
         {valves.map((v) => {
           const cfg = VALVE_BY_ID[v.valve_id] || {};
-          const isAnomaly = v.anomaly_detected;
+          const isAnomaly = isImpaired(v);
           const isFault = v.safety_override_active;
           const dtColor =
             Math.abs(v.dT_C - TARGET_DT_C) <= DT_TOLERANCE_C ? "#34d399" : "#fbbf24";

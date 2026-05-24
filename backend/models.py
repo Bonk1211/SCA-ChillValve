@@ -84,7 +84,16 @@ class WSExplanationMessage(BaseModel):
 
 class DebateSpeech(BaseModel):
     valve_id: str
-    text: str
+    # Structured fields — peer reports its state in machine-readable form so
+    # leader + UI don't parse prose.
+    status: Optional[Literal["impaired", "nominal"]] = None
+    flow_pct: Optional[int] = None
+    request: Optional[
+        Literal["open_more", "hold", "take_load", "close_more"]
+    ] = None
+    reason: Optional[str] = None
+    # Legacy free-text kept optional for backward compat.
+    text: Optional[str] = None
 
 
 class WSDebateMessage(BaseModel):
@@ -119,3 +128,25 @@ class WSRemediationMessage(BaseModel):
     executed: bool
     text: str
     wall_clock_s: float
+
+
+class WSSummaryMessage(BaseModel):
+    """End-of-run energy summary. Emitted once when the scenario reaches
+    duration_seconds (not on external stop). Quotes MEASURED per-phase
+    pump_kW so the dashboard can show real recovery savings instead of any
+    contrived steady-state vs Belimo claim. Phases:
+      pre_fault: from t=0 until first anomaly_detected anywhere
+      during_fault: anomaly active, no executed reset yet
+      post_recovery: after L3 executed attempt_actuator_reset and anomaly cleared
+    recovery_savings_kw = max(0, mean_kw_during_fault - mean_kw_post_recovery)."""
+    type: Literal["summary"] = "summary"
+    scenario: str
+    duration_s: int
+    total_kwh: float
+    mean_kw_pre_fault: float
+    mean_kw_during_fault: float
+    mean_kw_post_recovery: float
+    recovery_fired: bool
+    recovery_savings_kw: float
+    recovery_savings_kwh: float
+    dt_compliance_pct: float

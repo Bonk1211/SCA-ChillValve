@@ -39,7 +39,7 @@ log = logging.getLogger(__name__)
 
 MODEL = "deepseek-chat"
 BASE_URL = "https://api.deepseek.com"
-DEBATE_COOLDOWN_S = 0.0      # cooldown removed — debate fires as soon as one completes and the branch is still in the uncertain band (in-flight flag still prevents concurrent debates per branch)
+DEBATE_COOLDOWN_S = 20.0     # min gap per branch — gives judges ~15s to read transcript before it's overwritten
 PEER_SPEECH_MAX_TOKENS = 80
 LEADER_SYNTHESIS_MAX_TOKENS = 250
 
@@ -48,7 +48,7 @@ UNCERTAINTY_HI = 0.85
 
 # Recovery debate: fires when a valve has been anomalous for sustained time
 # despite peer reallocation. LLM picks the corrective action autonomously.
-RECOVERY_DEBATE_COOLDOWN_S = 0.0       # cooldown removed — recovery can refire as soon as the prior decision settles (in-flight flag still gates concurrent attempts per valve)
+RECOVERY_DEBATE_COOLDOWN_S = 30.0      # min gap per valve — prevents the recovery card from refreshing faster than judges can read it
 RECOVERY_ANOMALY_PERSISTENCE_S = 50.0  # how long an anomaly must persist before remediation
 RECOVERY_MAX_TOKENS = 200
 
@@ -58,16 +58,16 @@ RECOVERY_ACTIONS = frozenset(
 
 PEER_SYSTEM_PROMPT = (
     "You are an autonomous HVAC valve in a chilled-water distribution branch. "
-    "You debate your sibling valves to restore branch flow when the ML anomaly "
-    "detector is uncertain. Speak in first person as the valve. Be terse: "
-    "≤ 30 words, one sentence. ALWAYS quote your own flow_gpm number. "
-    "Then state (a) whether you are healthy or impaired (compare your flow "
-    "to design_flow_gpm — if you're at <60% of design or anomaly_confidence "
-    "> 0.4, you ARE impaired and must say so explicitly), and (b) what you "
-    "ask of your peers (e.g. 'please open more to cover my shortfall', "
-    "'I can take more load', 'hold steady'). Speak even if you are the "
-    "faulty one — silence helps no one. Do not propose numeric allocations; "
-    "the leader decides."
+    "Report your state to the branch leader using STRICT JSON only. "
+    "Schema:\n"
+    '  {\n'
+    '    "status": "impaired" | "nominal",   // impaired if flow<60% of design OR anomaly_confidence>0.4\n'
+    '    "flow_pct": integer 0-200,           // your current flow as % of design\n'
+    '    "request": "open_more" | "hold" | "take_load" | "close_more",\n'
+    '    "reason": string ≤ 15 words          // one short clause, no preamble\n'
+    '  }\n'
+    "Speak even if impaired — silence helps no one. "
+    "Output ONLY the JSON object, no markdown fences, no extra text."
 )
 
 LEADER_SYSTEM_PROMPT = (
@@ -86,18 +86,25 @@ LEADER_SYSTEM_PROMPT = (
 
 RECOVERY_SYSTEM_PROMPT = (
     "You are the elected leader of a chilled-water valve branch. A peer valve "
-    "has remained anomalous for an extended period, even after you re-allocated "
-    "the branch's flow setpoints to compensate. The root cause has not cleared. "
-    "Now decide the corrective action. Choose exactly one:\n"
-    "  'attempt_actuator_reset' — issue a soft reset to the actuator. Suitable "
-    "for transient faults (stuck spindle, comms timeout). Brief service interruption.\n"
-    "  'schedule_maintenance' — file a work order for human inspection. Suitable "
-    "for hard faults (coil fouling, sensor drift, mechanical wear).\n"
-    "  'accept_degradation' — keep the current peer-compensated state. Suitable "
-    "when the branch is already meeting service goals and intervention is risky.\n"
-    "Output ONLY valid JSON of the form "
+    "has remained anomalous despite peer-reallocation. Your goal: RESTORE "
+    "branch flow balance. Peer reallocation alone cannot bring flow back to "
+    "design — the impaired valve itself must be unstuck. Choose exactly one "
+    "action:\n"
+    "  'attempt_actuator_reset' — soft power-cycle the actuator. THIS IS THE "
+    "DEFAULT first response. Even faults that look hard (low flow + full "
+    "position + high ΔT) frequently clear after a reset. Brief service "
+    "interruption only. PREFER THIS unless a reset has already been tried "
+    "recently on this same valve.\n"
+    "  'schedule_maintenance' — file a human work order. Only choose this if "
+    "'recent_actions' below shows attempt_actuator_reset was ALREADY tried at "
+    "least once on this valve and the anomaly is still present. Filing a work "
+    "order does NOT clear the fault during the demo; reset is what actually "
+    "restores flow.\n"
+    "  'accept_degradation' — keep peer-compensated state. Only choose this "
+    "if branch flow is already within 5% of design sum AND a reset was tried.\n"
+    "Output ONLY valid JSON: "
     '{"action": "<one of the three>", "rationale": "one-sentence reason"}. '
-    "Do not include any text outside the JSON object."
+    "No text outside the JSON object."
 )
 
 
@@ -127,7 +134,7 @@ def state_fingerprint(valves: List[Dict[str, Any]]) -> str:
 class DebateRound:
     branch_id: str
     tick: int
-    speeches: List[Dict[str, str]] = field(default_factory=list)   # {valve_id, text}
+    speeches: List[Dict[str, Any]] = field(default_factory=list)   # {valve_id, status, flow_pct, request, reason}
     allocations: Dict[str, float] = field(default_factory=dict)    # valve_id → position
     rationale: str = ""
     cause: str = "uncertain_anomaly"
@@ -168,6 +175,14 @@ class DebateRunner:
         except Exception as e:
             log.warning("failed to init DeepSeek client for debate: %s", e)
 
+    def reset(self) -> None:
+        """Drop per-run cooldown trackers. Must be called on engine REPLAY
+        so a new sim_t=0 doesn't fail the `t - last >= cooldown` check
+        against the prior run's much-larger absolute sim_t."""
+        self.last_debate_at.clear()
+        self.last_recovery_at.clear()
+        self.cache.clear()
+
     def can_debate(self, branch_id: str, t_seconds: float) -> bool:
         if not self._enabled:
             return False
@@ -188,13 +203,18 @@ class DebateRunner:
         valves: List[Dict[str, Any]],
         t_seconds: float,
         anomaly_age_s: float,
+        recent_actions: Optional[List[str]] = None,
     ) -> Optional[RecoveryDecision]:
         """Second-tier debate: peer reallocation already happened but the
-        target valve is still anomalous. LLM picks one corrective action."""
+        target valve is still anomalous. LLM picks one corrective action.
+        `recent_actions` is the history of prior recovery actions on this
+        valve, oldest first. Used to bias the LLM toward reset on first
+        attempt and to escalate to maintenance only after a reset failed."""
         if not self._enabled:
             return None
         if not self.can_recover(target_valve_id, t_seconds):
             return None
+        recent_actions = recent_actions or []
 
         start = time.monotonic()
         target = next((v for v in valves if v["valve_id"] == target_valve_id), None)
@@ -203,6 +223,9 @@ class DebateRunner:
             return None
         peers = [v for v in valves if v["valve_id"] != target_valve_id]
 
+        history_line = (
+            ", ".join(recent_actions) if recent_actions else "none — nothing tried yet"
+        )
         prompt = (
             f"Branch: {branch_id}\n"
             f"You are the elected leader, valve {leader_id}.\n"
@@ -212,6 +235,7 @@ class DebateRunner:
             f"anomaly_confidence={target['anomaly_confidence']:.2f}, "
             f"safety_override={target['safety_override_active']}\n"
             f"  anomaly has persisted for ~{anomaly_age_s:.0f} seconds despite peer reallocation.\n"
+            f"recent_actions on this valve (oldest first): [{history_line}]\n"
             f"Peer state (compensating):\n"
         )
         for p in peers:
@@ -222,7 +246,9 @@ class DebateRunner:
                 f"ΔT={p['dT_C']:.1f}, pos={p['position_pct']:.0f}\n"
             )
         prompt += (
-            "Choose one action and output JSON only:\n"
+            "Remember: reset is the DEFAULT first response. Only choose "
+            "schedule_maintenance if recent_actions already contains "
+            "'attempt_actuator_reset'. Output JSON only:\n"
             '  {"action": "attempt_actuator_reset" | "schedule_maintenance" | "accept_degradation", '
             '"rationale": "one short sentence"}'
         )
@@ -280,21 +306,28 @@ class DebateRunner:
             for v in peers
         ]
         peer_results = await asyncio.gather(*peer_tasks, return_exceptions=True)
-        speeches: List[Dict[str, str]] = []
+        speeches: List[Dict[str, Any]] = []
         for v, result in zip(peers, peer_results, strict=False):
             if isinstance(result, Exception):
                 # Never drop a peer entirely — fall back to a deterministic
-                # state-report so the UI always renders a bubble.
+                # structured speech so the UI always renders a bubble.
                 log.warning("peer speech exception for %s: %s", v["valve_id"], result)
                 design_flow_gpm = 50 if branch_id == "A" else 150
-                text = (
-                    f"My flow is {v['flow_gpm']:.0f} GPM "
-                    f"({(v['flow_gpm']/design_flow_gpm)*100:.0f}% of design). "
-                    f"(LLM unavailable — auto-report only)"
+                flow_pct_int = int(round((v["flow_gpm"] / design_flow_gpm) * 100))
+                impaired = (
+                    v["flow_gpm"] < 0.6 * design_flow_gpm
+                    or v["anomaly_confidence"] > 0.4
                 )
-                speeches.append({"valve_id": v["valve_id"], "text": text})
+                speeches.append({
+                    "valve_id": v["valve_id"],
+                    "status": "impaired" if impaired else "nominal",
+                    "flow_pct": flow_pct_int,
+                    "request": "open_more" if impaired else "hold",
+                    "reason": "LLM unavailable — auto-report only",
+                })
                 continue
-            speeches.append({"valve_id": v["valve_id"], "text": result})
+            # result is already a structured dict from _peer_speech.
+            speeches.append({"valve_id": v["valve_id"], **result})
 
         # Phase 2: leader synthesis.
         synthesis = await self._leader_synthesis(branch_id, leader, peers, speeches)
@@ -328,8 +361,12 @@ class DebateRunner:
         branch_id: str,
         valve: Dict[str, Any],
         all_peers_view: List[Dict[str, Any]],
-    ) -> str:
+    ) -> Dict[str, Any]:
+        """Returns a structured speech dict:
+        {status, flow_pct, request, reason}. Falls back to a deterministic
+        dict if the LLM is unavailable or returns invalid JSON."""
         design_flow_gpm = 50 if branch_id == "A" else 150
+        flow_pct_int = int(round((valve["flow_gpm"] / design_flow_gpm) * 100))
         impaired = (
             valve["flow_gpm"] < 0.6 * design_flow_gpm
             or valve["anomaly_confidence"] > 0.4
@@ -338,7 +375,7 @@ class DebateRunner:
             f"Branch: {branch_id} (design flow per valve = {design_flow_gpm} GPM)\n"
             f"You are valve {valve['valve_id']}.\n"
             f"Your state: flow={valve['flow_gpm']:.1f} GPM "
-            f"({(valve['flow_gpm']/design_flow_gpm)*100:.0f}% of design), "
+            f"({flow_pct_int}% of design), "
             f"ΔT={valve['dT_C']:.1f}°C, position={valve['position_pct']:.0f}%, "
             f"anomaly_confidence={valve['anomaly_confidence']:.2f}, "
             f"safety_override={valve['safety_override_active']}\n"
@@ -354,34 +391,53 @@ class DebateRunner:
                 f"ΔT={p['dT_C']:.1f}, pos={p['position_pct']:.0f}, "
                 f"conf={p['anomaly_confidence']:.2f}\n"
             )
-        prompt += "Speak now (≤ 30 words, must quote your own flow_gpm):"
-        text = await asyncio.to_thread(
+        prompt += "Output the JSON object now."
+        raw = await asyncio.to_thread(
             self._call_llm, PEER_SYSTEM_PROMPT, prompt, PEER_SPEECH_MAX_TOKENS
         )
-        # Never go silent — fallback announces state deterministically so the
-        # UI always shows a bubble for every peer (especially the faulty one).
-        if not text:
-            if impaired:
-                text = (
-                    f"My flow is {valve['flow_gpm']:.0f} GPM "
-                    f"({(valve['flow_gpm']/design_flow_gpm)*100:.0f}% of design) — "
-                    f"I'm impaired. Peers, please open more to cover my shortfall."
-                )
-            else:
-                text = (
-                    f"My flow is {valve['flow_gpm']:.0f} GPM ({(valve['flow_gpm']/design_flow_gpm)*100:.0f}% of design) — "
-                    f"holding steady, can take a bit more load if needed."
-                )
-        return text
+        parsed = self._parse_json(raw) if raw else None
+        # Validate + sanitize parsed shape; fall back deterministically.
+        valid_status = {"impaired", "nominal"}
+        valid_request = {"open_more", "hold", "take_load", "close_more"}
+        if (
+            parsed
+            and parsed.get("status") in valid_status
+            and parsed.get("request") in valid_request
+        ):
+            return {
+                "status": parsed["status"],
+                "flow_pct": int(parsed.get("flow_pct", flow_pct_int)),
+                "request": parsed["request"],
+                "reason": str(parsed.get("reason", ""))[:120],
+            }
+        # Deterministic fallback so UI always renders a structured bubble.
+        return {
+            "status": "impaired" if impaired else "nominal",
+            "flow_pct": flow_pct_int,
+            "request": "open_more" if impaired else "hold",
+            "reason": (
+                "flow far below design, need help"
+                if impaired
+                else "holding steady, room for more load"
+            ),
+        }
 
     async def _leader_synthesis(
         self,
         branch_id: str,
         leader: Dict[str, Any],
         peers: List[Dict[str, Any]],
-        speeches: List[Dict[str, str]],
+        speeches: List[Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
-        speech_block = "\n".join(f"  {s['valve_id']}: {s['text']}" for s in speeches)
+        # Render structured speech rows so the leader sees a compact table
+        # instead of free prose. Each row: status / flow_pct / request / reason.
+        def _row(s):
+            return (
+                f"  {s['valve_id']}: status={s.get('status','?')}, "
+                f"flow_pct={s.get('flow_pct','?')}, "
+                f"request={s.get('request','?')} — {s.get('reason','')}"
+            )
+        speech_block = "\n".join(_row(s) for s in speeches)
         prompt = (
             f"Branch: {branch_id}\n"
             f"You are leader {leader['valve_id']}.\n"
@@ -389,7 +445,7 @@ class DebateRunner:
             f"ΔT={leader['dT_C']:.1f}°C, position={leader['position_pct']:.0f}%\n"
             f"Peer current positions: "
             f"{ {p['valve_id']: round(p['position_pct'], 1) for p in peers} }\n"
-            f"Peer speeches:\n{speech_block}\n\n"
+            f"Peer reports:\n{speech_block}\n\n"
             f"Output JSON: allocations for each peer valve only "
             f"(not yourself), plus a one-sentence rationale."
         )

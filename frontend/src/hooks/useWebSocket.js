@@ -11,6 +11,7 @@ export function useWebSocket(url) {
   const pushExplanation = useDashboardStore((s) => s.pushExplanation);
   const pushDebate = useDashboardStore((s) => s.pushDebate);
   const pushRemediation = useDashboardStore((s) => s.pushRemediation);
+  const pushSummary = useDashboardStore((s) => s.pushSummary);
 
   useEffect(() => {
     let cancelled = false;
@@ -30,6 +31,7 @@ export function useWebSocket(url) {
           if (msg.type === "explanation") pushExplanation(msg);
           else if (msg.type === "debate") pushDebate(msg);
           else if (msg.type === "remediation") pushRemediation(msg);
+          else if (msg.type === "summary") pushSummary(msg);
           else pushSnapshot(msg);
         } catch {
           /* drop malformed */

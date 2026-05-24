@@ -1,5 +1,11 @@
 import { useDashboardStore } from "../../store/useDashboardStore";
-import { TARGET_DT_C, DT_TOLERANCE_C, BELIMO_REFERENCE_KW } from "../../lib/valveConfig";
+import { TARGET_DT_C, DT_TOLERANCE_C } from "../../lib/valveConfig";
+import { isImpaired } from "../../lib/impairment";
+
+// Pump rated draw — used for the PUMP POWER utilization gauge below.
+// This is NOT a Belimo comparison. Any controller-vs-controller story lives
+// in the slide deck + `--mode compare` CLI (see PRD §6).
+const PUMP_NAMEPLATE_KW = 20.5;
 
 function KpiBigCard({ label, value, unit, sub, color }) {
   return (
@@ -60,13 +66,11 @@ export default function KpiTrio() {
   ).length;
   const dtCompliancePct = totalValves > 0 ? (compliantCount / totalValves) * 100 : 0;
 
-  const anomalies = valves.filter((v) => v.anomaly_detected).length;
+  const anomalies = valves.filter(isImpaired).length;
 
   const currentKw = latest?.pump_kw ?? 0;
   const hasData = latest != null && currentKw > 0;
-  const savingsPct = hasData
-    ? ((BELIMO_REFERENCE_KW - currentKw) / BELIMO_REFERENCE_KW) * 100
-    : 0;
+  const pumpUtilPct = hasData ? (currentKw / PUMP_NAMEPLATE_KW) * 100 : 0;
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 6 }}>
@@ -78,24 +82,20 @@ export default function KpiTrio() {
         color={dtCompliancePct >= 80 ? "#34d399" : dtCompliancePct >= 50 ? "#fbbf24" : "#f87171"}
       />
       <KpiBigCard
-        label="ENERGY vs BELIMO"
-        value={
-          !hasData
-            ? "—"
-            : (savingsPct >= 0 ? "+" : "−") + Math.abs(savingsPct).toFixed(1)
-        }
-        unit={!hasData ? "" : "%"}
+        label="PUMP POWER"
+        value={hasData ? currentKw.toFixed(2) : "—"}
+        unit={hasData ? "kW" : ""}
         sub={
-          !hasData
-            ? "(awaiting first tick)"
-            : `${currentKw.toFixed(2)} kW vs ${BELIMO_REFERENCE_KW.toFixed(1)} kW Belimo (datasheet)`
+          hasData
+            ? `${pumpUtilPct.toFixed(0)}% of ${PUMP_NAMEPLATE_KW} kW nameplate`
+            : "awaiting data"
         }
         color={
           !hasData
             ? "#9aacc8"
-            : savingsPct >= 8
+            : pumpUtilPct < 50
             ? "#34d399"
-            : savingsPct >= 0
+            : pumpUtilPct < 80
             ? "#fbbf24"
             : "#f87171"
         }
@@ -104,7 +104,11 @@ export default function KpiTrio() {
         label="ACTIVE ANOMALIES"
         value={anomalies.toString()}
         unit={`/ ${totalValves}`}
-        sub={anomalies === 0 ? "all valves nominal" : "Layer 2 ML detection"}
+        sub={
+          anomalies === 0
+            ? "all valves nominal"
+            : `${anomalies} valve${anomalies > 1 ? "s" : ""} below design`
+        }
         color={anomalies === 0 ? "#34d399" : anomalies <= 2 ? "#fbbf24" : "#f87171"}
       />
     </div>

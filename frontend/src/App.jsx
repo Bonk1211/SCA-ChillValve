@@ -16,6 +16,7 @@ import Schematic from "./components/v5/Schematic";
 import ValveTable from "./components/v5/ValveTable";
 import EventLog from "./components/v5/EventLog";
 import DebateStage from "./components/v5/DebateStage";
+import SummaryBanner from "./components/v5/SummaryBanner";
 import ControlBar from "./components/v5/ControlBar";
 
 const POLL_HEALTH_MS = 2000;
@@ -314,6 +315,7 @@ export default function App() {
             />
           </div>
         </div>
+        <SummaryBanner />
         <DebateStage />
         </div>
 

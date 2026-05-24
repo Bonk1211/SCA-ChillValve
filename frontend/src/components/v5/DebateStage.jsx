@@ -2,13 +2,96 @@ import { useEffect, useRef, useState } from "react";
 import { useDashboardStore } from "../../store/useDashboardStore";
 import { VALVES } from "../../lib/valveConfig";
 
-const CHAR_DELAY_MS = 22;
-const PHASE_PAUSE_MS = 450;
+const CHAR_DELAY_MS = 38;      // slower per-character typing — easier to follow
+const PHASE_PAUSE_MS = 900;    // longer hold between peer phases so each bubble is readable
 const BRANCHES = ["A", "B"];
 
-function ValveBubble({ vid, text, isLeader, isActive, isDone, isCached, allocPct }) {
+const REQUEST_LABEL = {
+  open_more: "OPEN +",
+  hold: "HOLD",
+  take_load: "TAKE LOAD",
+  close_more: "CLOSE −",
+};
+const REQUEST_COLOR = {
+  open_more: "#34d399",
+  hold: "#9aacc8",
+  take_load: "#22d3ee",
+  close_more: "#fbbf24",
+};
+
+function StatusChip({ status }) {
+  if (!status) return null;
+  const isImpaired = status === "impaired";
+  const bg = isImpaired ? "#f87171" : "#34d399";
+  return (
+    <span
+      className="mono"
+      style={{
+        fontSize: 11,
+        fontWeight: 700,
+        color: "#0a1224",
+        background: bg,
+        padding: "2px 6px",
+        borderRadius: 3,
+        letterSpacing: "0.1em",
+      }}
+    >
+      {isImpaired ? "IMPAIRED" : "NOMINAL"}
+    </span>
+  );
+}
+
+function FlowBar({ pct }) {
+  if (pct == null) return null;
+  const clamped = Math.max(0, Math.min(150, pct));
+  const isLow = pct < 60;
+  const color = isLow ? "#f87171" : pct > 110 ? "#fbbf24" : "#34d399";
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 3 }}>
+      <div
+        style={{
+          flex: 1,
+          height: 8,
+          background: "#1a2640",
+          borderRadius: 3,
+          position: "relative",
+          overflow: "hidden",
+        }}
+      >
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            width: `${(clamped / 150) * 100}%`,
+            background: color,
+            transition: "width 0.3s",
+          }}
+        />
+        <div
+          style={{
+            position: "absolute",
+            top: 0,
+            bottom: 0,
+            left: `${(100 / 150) * 100}%`,
+            width: 1,
+            background: "#d1dcec88",
+          }}
+          title="100% design"
+        />
+      </div>
+      <span
+        className="mono"
+        style={{ fontSize: 13, fontWeight: 700, color, minWidth: 40, textAlign: "right" }}
+      >
+        {pct}%
+      </span>
+    </div>
+  );
+}
+
+function ValveBubble({ vid, speech, isLeader, isActive, isDone, isCached, allocPct, leaderText }) {
   const accent = isLeader ? "#22d3ee" : "#a78bfa";
-  const showText = isActive || isDone || isCached;
+  const showContent = isActive || isDone || isCached;
   return (
     <div
       style={{
@@ -24,13 +107,13 @@ function ValveBubble({ vid, text, isLeader, isActive, isDone, isCached, allocPct
         gap: 3,
         boxShadow: isActive ? `0 0 14px ${accent}55, inset 0 0 12px ${accent}22` : "none",
         transition: "background 0.2s, border 0.2s, box-shadow 0.2s",
-        opacity: isActive || isDone || isCached ? 1 : 0.5,
+        opacity: showContent ? 1 : 0.5,
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 5, flexShrink: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 7, flexShrink: 0, flexWrap: "wrap" }}>
         <span
           className="mono"
-          style={{ fontSize: 13, fontWeight: 700, color: "#fff", letterSpacing: "0.04em" }}
+          style={{ fontSize: 17, fontWeight: 700, color: "#fff", letterSpacing: "0.04em" }}
         >
           {vid}
         </span>
@@ -38,31 +121,33 @@ function ValveBubble({ vid, text, isLeader, isActive, isDone, isCached, allocPct
           <span
             className="mono"
             style={{
-              fontSize: 8,
+              fontSize: 11,
               fontWeight: 700,
               color: "#0a1224",
               background: accent,
-              padding: "1px 3px",
-              borderRadius: 2,
+              padding: "2px 6px",
+              borderRadius: 3,
               letterSpacing: "0.1em",
             }}
           >
             LEADER
           </span>
+        ) : showContent && speech ? (
+          <StatusChip status={speech.status} />
         ) : (
           <span
             className="mono"
-            style={{ fontSize: 8, fontWeight: 600, color: accent, letterSpacing: "0.1em" }}
+            style={{ fontSize: 11, fontWeight: 600, color: accent, letterSpacing: "0.1em" }}
           >
             PEER
           </span>
         )}
         {isActive && (
-          <span style={{ display: "flex", alignItems: "center", gap: 3, marginLeft: "auto" }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 4, marginLeft: "auto" }}>
             <span
               style={{
-                width: 5,
-                height: 5,
+                width: 7,
+                height: 7,
                 borderRadius: "50%",
                 background: accent,
                 animation: "debatePulse 0.9s ease-in-out infinite",
@@ -70,7 +155,7 @@ function ValveBubble({ vid, text, isLeader, isActive, isDone, isCached, allocPct
             />
             <span
               className="mono"
-              style={{ fontSize: 8, color: accent, fontWeight: 600, letterSpacing: "0.1em" }}
+              style={{ fontSize: 11, color: accent, fontWeight: 600, letterSpacing: "0.1em" }}
             >
               {isLeader ? "SYNTH" : "SPEAK"}
             </span>
@@ -81,43 +166,87 @@ function ValveBubble({ vid, text, isLeader, isActive, isDone, isCached, allocPct
             className="mono"
             style={{
               marginLeft: "auto",
-              fontSize: 11,
+              fontSize: 14,
               fontWeight: 700,
               color: accent,
-              padding: "1px 5px",
+              padding: "2px 7px",
               background: `${accent}1c`,
-              borderRadius: 2,
+              borderRadius: 3,
             }}
           >
             → {allocPct.toFixed(0)}%
           </span>
         )}
       </div>
-      <div
-        className="mono"
-        style={{
-          fontSize: 11,
-          color: showText ? "#d1dcec" : "#445574",
-          lineHeight: 1.4,
-          minHeight: 70,
-          fontStyle: isLeader ? "normal" : "italic",
-        }}
-      >
-        {showText ? text || "…" : "(waiting)"}
-        {isActive && (
-          <span
-            style={{
-              display: "inline-block",
-              width: 6,
-              height: 11,
-              background: accent,
-              marginLeft: 2,
-              verticalAlign: "text-bottom",
-              animation: "debateCaret 0.6s steps(1) infinite",
-            }}
-          />
-        )}
-      </div>
+      {isLeader ? (
+        <div
+          className="mono"
+          style={{
+            fontSize: 14,
+            color: showContent ? "#d1dcec" : "#445574",
+            lineHeight: 1.45,
+            minHeight: 95,
+          }}
+        >
+          {showContent ? leaderText || "…" : "(waiting)"}
+          {isActive && (
+            <span
+              style={{
+                display: "inline-block",
+                width: 7,
+                height: 14,
+                background: accent,
+                marginLeft: 2,
+                verticalAlign: "text-bottom",
+                animation: "debateCaret 0.6s steps(1) infinite",
+              }}
+            />
+          )}
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 5, minHeight: 95 }}>
+          {showContent && speech ? (
+            <>
+              <FlowBar pct={speech.flow_pct} />
+              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <span
+                  className="mono"
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 700,
+                    color: REQUEST_COLOR[speech.request] ?? "#9aacc8",
+                    background: `${REQUEST_COLOR[speech.request] ?? "#9aacc8"}1c`,
+                    border: `1px solid ${REQUEST_COLOR[speech.request] ?? "#9aacc8"}55`,
+                    padding: "2px 7px",
+                    borderRadius: 3,
+                    letterSpacing: "0.08em",
+                  }}
+                >
+                  {REQUEST_LABEL[speech.request] ?? speech.request ?? "—"}
+                </span>
+              </div>
+              <div
+                style={{
+                  fontSize: 13,
+                  color: "#d1dcec",
+                  fontStyle: "italic",
+                  lineHeight: 1.35,
+                  overflow: "hidden",
+                }}
+              >
+                "{speech.reason ?? speech.text ?? ""}"
+              </div>
+            </>
+          ) : (
+            <div
+              className="mono"
+              style={{ fontSize: 13, color: "#445574", fontStyle: "italic" }}
+            >
+              (waiting)
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -148,11 +277,11 @@ function BranchPanel({ branchId, debate, animState }) {
           <span
             className="mono"
             style={{
-              fontSize: 8,
+              fontSize: 11,
               color: "#0a1224",
               background: "#a78bfa",
-              padding: "1px 5px",
-              borderRadius: 2,
+              padding: "2px 7px",
+              borderRadius: 3,
               fontWeight: 700,
               letterSpacing: "0.1em",
             }}
@@ -161,13 +290,13 @@ function BranchPanel({ branchId, debate, animState }) {
           </span>
           <span
             className="mono"
-            style={{ fontSize: 10, color: "#a78bfa", fontWeight: 700, letterSpacing: "0.1em" }}
+            style={{ fontSize: 14, color: "#a78bfa", fontWeight: 700, letterSpacing: "0.1em" }}
           >
             BRANCH {branchId}
           </span>
           <span
             className="mono"
-            style={{ fontSize: 9, color: "#9aacc8", marginLeft: "auto", fontStyle: "italic" }}
+            style={{ fontSize: 12, color: "#9aacc8", marginLeft: "auto", fontStyle: "italic" }}
           >
             idle
           </span>
@@ -175,10 +304,10 @@ function BranchPanel({ branchId, debate, animState }) {
         <div
           className="mono"
           style={{
-            fontSize: 10,
+            fontSize: 13,
             color: "#9aacc8",
             fontStyle: "italic",
-            padding: "8px 6px",
+            padding: "12px 8px",
             textAlign: "center",
           }}
         >
@@ -188,8 +317,9 @@ function BranchPanel({ branchId, debate, animState }) {
     );
   }
 
+  // Index speeches by valve_id — each speech is a structured dict.
   const speechByValve = Object.fromEntries(
-    debate.speeches.map((s) => [s.valve_id, s.text]),
+    debate.speeches.map((s) => [s.valve_id, s]),
   );
   const branchValves = VALVES.filter((v) => v.branch === debate.branch_id).map(
     (v) => v.id,
@@ -198,13 +328,13 @@ function BranchPanel({ branchId, debate, animState }) {
   const phases = [
     ...peerIds.map((vid) => ({
       vid,
-      text: speechByValve[vid] ?? "(no speech recorded)",
+      speech: speechByValve[vid] ?? null,
       isLeader: false,
     })),
-    { vid: debate.leader_id, text: debate.rationale, isLeader: true },
+    { vid: debate.leader_id, isLeader: true },
   ];
 
-  const { activeIdx = -1, displayed = {} } = animState ?? {};
+  const { activeIdx = -1, leaderDisplayed = "" } = animState ?? {};
 
   return (
     <div
@@ -240,7 +370,7 @@ function BranchPanel({ branchId, debate, animState }) {
         >
           BRANCH {debate.branch_id}
         </span>
-        <span className="mono" style={{ fontSize: 9, color: "#9aacc8", marginLeft: "auto" }}>
+        <span className="mono" style={{ fontSize: 12, color: "#9aacc8", marginLeft: "auto" }}>
           t={debate.tick} · {(debate.wall_clock_s ?? 0).toFixed(2)}s
           {debate.cached && " · CACHED"}
           {activeIdx >= 0 && " · LIVE"}
@@ -252,7 +382,8 @@ function BranchPanel({ branchId, debate, animState }) {
           <ValveBubble
             key={phase.vid}
             vid={phase.vid}
-            text={displayed[phase.vid] ?? ""}
+            speech={phase.speech}
+            leaderText={phase.isLeader ? leaderDisplayed : undefined}
             isLeader={phase.isLeader}
             isActive={activeIdx === i}
             isDone={activeIdx > i || activeIdx === -1}
@@ -371,61 +502,68 @@ export default function DebateStage() {
       clearTimeout(timersRef.current[branchId]);
 
       if (latest.cached) {
-        const all = {};
-        for (const s of latest.speeches) all[s.valve_id] = s.text;
-        all[latest.leader_id] = latest.rationale;
-        setAnimByBranch((prev) => ({ ...prev, [branchId]: { activeIdx: -1, displayed: all } }));
+        setAnimByBranch((prev) => ({
+          ...prev,
+          [branchId]: { activeIdx: -1, leaderDisplayed: latest.rationale },
+        }));
         continue;
       }
 
-      const speechByValve = Object.fromEntries(
-        latest.speeches.map((s) => [s.valve_id, s.text]),
-      );
+      // Animation flow: peers reveal structured fields one-by-one (no
+      // typewriter — they're not free prose anymore), then leader typewrites
+      // their rationale at the end.
       const branchValves = VALVES.filter((v) => v.branch === branchId).map((v) => v.id);
       const peerIds = branchValves.filter((vid) => vid !== latest.leader_id);
-      const phases = [
-        ...peerIds.map((vid) => ({
-          vid,
-          text: speechByValve[vid] ?? "(no speech recorded)",
-        })),
-        { vid: latest.leader_id, text: latest.rationale },
-      ];
+      const totalPhases = peerIds.length + 1;
+      const leaderIdx = peerIds.length;
 
       let pIdx = 0;
-      let cIdx = 0;
-      const accum = {};
-      setAnimByBranch((prev) => ({ ...prev, [branchId]: { activeIdx: 0, displayed: {} } }));
+      setAnimByBranch((prev) => ({
+        ...prev,
+        [branchId]: { activeIdx: 0, leaderDisplayed: "" },
+      }));
 
       const step = () => {
-        if (pIdx >= phases.length) {
+        if (pIdx >= totalPhases) {
           setAnimByBranch((prev) => ({
             ...prev,
             [branchId]: { ...prev[branchId], activeIdx: -1 },
           }));
           return;
         }
-        const phase = phases[pIdx];
-        if (cIdx > phase.text.length) {
+        if (pIdx < leaderIdx) {
+          // Peer phase — flash the bubble briefly, then advance.
           timersRef.current[branchId] = setTimeout(() => {
             pIdx++;
-            cIdx = 0;
-            if (pIdx < phases.length) {
-              setAnimByBranch((prev) => ({
-                ...prev,
-                [branchId]: { ...prev[branchId], activeIdx: pIdx },
-              }));
-            }
+            setAnimByBranch((prev) => ({
+              ...prev,
+              [branchId]: { ...prev[branchId], activeIdx: pIdx },
+            }));
             step();
           }, PHASE_PAUSE_MS);
           return;
         }
-        accum[phase.vid] = phase.text.slice(0, cIdx);
-        setAnimByBranch((prev) => ({
-          ...prev,
-          [branchId]: { ...prev[branchId], displayed: { ...accum } },
-        }));
-        cIdx++;
-        timersRef.current[branchId] = setTimeout(step, CHAR_DELAY_MS);
+        // Leader phase — typewrite rationale.
+        const text = latest.rationale ?? "";
+        let cIdx = 0;
+        const typeLeader = () => {
+          if (cIdx > text.length) {
+            timersRef.current[branchId] = setTimeout(() => {
+              setAnimByBranch((prev) => ({
+                ...prev,
+                [branchId]: { ...prev[branchId], activeIdx: -1 },
+              }));
+            }, PHASE_PAUSE_MS);
+            return;
+          }
+          setAnimByBranch((prev) => ({
+            ...prev,
+            [branchId]: { ...prev[branchId], leaderDisplayed: text.slice(0, cIdx) },
+          }));
+          cIdx++;
+          timersRef.current[branchId] = setTimeout(typeLeader, CHAR_DELAY_MS);
+        };
+        typeLeader();
       };
       step();
     }

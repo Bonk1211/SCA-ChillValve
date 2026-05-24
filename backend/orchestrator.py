@@ -7,14 +7,18 @@ and batched persistence to SQLite.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+log = logging.getLogger(__name__)
+
 from backend.debate import (
     RECOVERY_ANOMALY_PERSISTENCE_S,
     DebateRunner,
+    RecoveryDecision,
     is_uncertain_branch,
 )
 from backend.explainer import Explainer
@@ -58,7 +62,19 @@ class EngineService:
     _anomaly_last_tick: Dict[str, int] = field(default_factory=dict, repr=False)
     _recovery_in_flight: Dict[str, bool] = field(default_factory=dict, repr=False)
     _post_recovery_grace_until: Dict[str, int] = field(default_factory=dict, repr=False)
+    _recovery_history: Dict[str, List[str]] = field(default_factory=dict, repr=False)
+    _last_emitted_recovery: Dict[str, tuple] = field(default_factory=dict, repr=False)
     _bg_tasks: set = field(default_factory=set, repr=False)
+    # Energy tracker — accumulate pump_kWh and per-phase mean pump_kW so the
+    # end-of-run summary can quote MEASURED savings from L3 recovery, not
+    # marketing numbers. State machine: pre_fault → during_fault → post_recovery.
+    _energy_phase: str = field(default="pre_fault", repr=False)
+    _total_kwh: float = field(default=0.0, repr=False)
+    _phase_kw_sum: Dict[str, float] = field(default_factory=dict, repr=False)
+    _phase_kw_count: Dict[str, int] = field(default_factory=dict, repr=False)
+    _dt_compliant_ticks: int = field(default=0, repr=False)
+    _dt_total_samples: int = field(default=0, repr=False)
+    _summary_emitted: bool = field(default=False, repr=False)
 
     def attach_db_writer(self, writer: Callable[[List[tuple]], None]) -> None:
         self._db_writer = writer
@@ -131,6 +147,19 @@ class EngineService:
         self._anomaly_last_tick.clear()
         self._recovery_in_flight.clear()
         self._post_recovery_grace_until.clear()
+        self._recovery_history.clear()
+        self._last_emitted_recovery.clear()
+        self._energy_phase = "pre_fault"
+        self._total_kwh = 0.0
+        self._phase_kw_sum.clear()
+        self._phase_kw_count.clear()
+        self._dt_compliant_ticks = 0
+        self._dt_total_samples = 0
+        self._summary_emitted = False
+        # Clear LLM-runner per-run state too — otherwise stored last_debate_at
+        # from the prior run is way ahead of the new sim_t=0 and can_debate()
+        # blocks forever on REPLAY.
+        self._debate.reset()
         # Cancel + drop any orphan background tasks from a previous run.
         for t in list(self._bg_tasks):
             t.cancel()
@@ -203,6 +232,7 @@ class EngineService:
                 await asyncio.sleep(0.05)
                 continue
             snapshot = await asyncio.to_thread(self._tick_once)
+            self._accumulate_energy(snapshot)
             await self._fanout(snapshot)
             await self._detect_leader_changes(snapshot)
             if self._mode == "chillvalve":
@@ -222,6 +252,107 @@ class EngineService:
             buf = list(self._op_buffer)
             self._op_buffer.clear()
             await asyncio.to_thread(self._db_writer, buf)
+        # Scenario ran to completion (not externally stopped). Emit the
+        # end-of-run energy summary — this is the honest, measured proof of
+        # what L3 recovery saved, computed from per-tick pump_kW samples.
+        if not self._stop.is_set():
+            await self._emit_summary()
+
+    def _accumulate_energy(self, snapshot: Dict[str, Any]) -> None:
+        """Per-tick: integrate pump_kWh and bucket pump_kW into the current
+        phase. Phase transitions: pre_fault → during_fault (first anomaly
+        seen) → post_recovery (first executed actuator_reset)."""
+        pump_kw = snapshot.get("pump_kw", 0.0) or 0.0
+        # tick_period_s is wall-clock; sim tick == 1 sim-second by convention.
+        # Use 1 sim-second per tick → kWh = sum(kW) / 3600.
+        self._total_kwh += pump_kw / 3600.0
+        self._phase_kw_sum[self._energy_phase] = (
+            self._phase_kw_sum.get(self._energy_phase, 0.0) + pump_kw
+        )
+        self._phase_kw_count[self._energy_phase] = (
+            self._phase_kw_count.get(self._energy_phase, 0) + 1
+        )
+        # ΔT compliance: count valves within 0.7°C of 5°C target.
+        for v in snapshot["valves"]:
+            self._dt_total_samples += 1
+            if abs(v["dT_C"] - 5.0) <= 0.7:
+                self._dt_compliant_ticks += 1
+        # Phase transitions.
+        if self._energy_phase == "pre_fault":
+            if any(v["anomaly_detected"] for v in snapshot["valves"]):
+                self._energy_phase = "during_fault"
+                log.info(
+                    "energy phase → during_fault at tick=%d (pump_kw=%.2f)",
+                    snapshot["tick"], pump_kw,
+                )
+        elif self._energy_phase == "during_fault":
+            # Transition to post_recovery once an executed actuator_reset has
+            # fired AND anomaly_detected has dropped back to false.
+            reset_fired = any(
+                "attempt_actuator_reset" in self._recovery_history.get(vid, [])
+                for vid in self._recovery_history
+            )
+            no_active_anomaly = not any(
+                v["anomaly_detected"] for v in snapshot["valves"]
+            )
+            if reset_fired and no_active_anomaly:
+                self._energy_phase = "post_recovery"
+                log.info(
+                    "energy phase → post_recovery at tick=%d (pump_kw=%.2f)",
+                    snapshot["tick"], pump_kw,
+                )
+
+    async def _emit_summary(self) -> None:
+        if self._summary_emitted:
+            return
+        self._summary_emitted = True
+
+        def _mean(phase: str) -> float:
+            c = self._phase_kw_count.get(phase, 0)
+            return (self._phase_kw_sum.get(phase, 0.0) / c) if c > 0 else 0.0
+
+        mean_pre = _mean("pre_fault")
+        mean_during = _mean("during_fault")
+        mean_post = _mean("post_recovery")
+        recovery_fired = "post_recovery" in self._phase_kw_count
+        # Savings interpretation: the during_fault phase shows what the pump
+        # had to draw while B2 was choking the branch (peers compensating at
+        # high positions → more head needed → more pump kW). post_recovery
+        # shows the pump after L3 cleared the fault. Delta × remaining
+        # scenario duration ≈ kWh that would have been wasted without L3.
+        recovery_savings_kw = (
+            max(0.0, mean_during - mean_post) if recovery_fired else 0.0
+        )
+        # Project the savings over the typical remaining duration past
+        # recovery (assume a real-world fault would have persisted to scenario
+        # end without intervention).
+        post_count = self._phase_kw_count.get("post_recovery", 0)
+        recovery_savings_kwh = recovery_savings_kw * (post_count / 3600.0)
+        dt_compliance_pct = (
+            100.0 * self._dt_compliant_ticks / self._dt_total_samples
+            if self._dt_total_samples > 0
+            else 0.0
+        )
+        scenario_name = self._scenario.name if self._scenario else "(unknown)"
+        msg = {
+            "type": "summary",
+            "scenario": scenario_name,
+            "duration_s": int(self._tick),
+            "total_kwh": round(self._total_kwh, 4),
+            "mean_kw_pre_fault": round(mean_pre, 3),
+            "mean_kw_during_fault": round(mean_during, 3),
+            "mean_kw_post_recovery": round(mean_post, 3),
+            "recovery_fired": recovery_fired,
+            "recovery_savings_kw": round(recovery_savings_kw, 3),
+            "recovery_savings_kwh": round(recovery_savings_kwh, 4),
+            "dt_compliance_pct": round(dt_compliance_pct, 1),
+        }
+        log.info("scenario summary: %s", msg)
+        for q in self._subscribers:
+            try:
+                q.put_nowait(msg)
+            except asyncio.QueueFull:
+                pass
 
     def _tick_once(self) -> Dict[str, Any]:
         assert self._system is not None
@@ -420,13 +551,49 @@ class EngineService:
         tick: int,
         anomaly_age_s: float,
     ) -> None:
-        """Run a recovery debate, then execute the LLM's chosen action."""
+        """Run a recovery debate, then execute the LLM's chosen action.
+        If the LLM dithers (picks schedule_maintenance / accept_degradation
+        twice in a row WITHOUT ever attempting a reset), auto-promote the
+        next decision to attempt_actuator_reset so flow actually restores."""
         try:
+            history = list(self._recovery_history.get(target_valve_id, []))
             decision = await self._debate.run_recovery_debate(
-                branch_id, target_valve_id, leader_id, valves, float(tick), anomaly_age_s,
+                branch_id, target_valve_id, leader_id, valves,
+                float(tick), anomaly_age_s, recent_actions=history,
             )
             if decision is None:
                 return
+            # Escalation: if LLM keeps refusing to attempt reset, force one.
+            never_reset = "attempt_actuator_reset" not in history
+            non_reset_picks = sum(
+                1 for a in history if a != "attempt_actuator_reset"
+            )
+            promoted = False
+            if (
+                never_reset
+                and non_reset_picks >= 1
+                and decision.action != "attempt_actuator_reset"
+            ):
+                decision = RecoveryDecision(
+                    branch_id=decision.branch_id,
+                    target_valve_id=decision.target_valve_id,
+                    leader_id=decision.leader_id,
+                    tick=decision.tick,
+                    action="attempt_actuator_reset",
+                    rationale=(
+                        f"AUTO-PROMOTED to reset after "
+                        f"{non_reset_picks} non-reset pick(s) without ever "
+                        f"attempting one (was: {decision.action}). Original "
+                        f"reason: {decision.rationale}"
+                    ),
+                    wall_clock_s=decision.wall_clock_s,
+                )
+                promoted = True
+            # Record into history AFTER promotion so escalation logic uses what
+            # actually got executed.
+            self._recovery_history.setdefault(target_valve_id, []).append(
+                decision.action
+            )
             executed_text = decision.rationale
             executed = False
             if decision.action == "attempt_actuator_reset":
@@ -457,6 +624,19 @@ class EngineService:
                 executed_text = f"maintenance work-order filed; {executed_text}"
             elif decision.action == "accept_degradation":
                 executed_text = f"degradation accepted; {executed_text}"
+            # Dedup: skip emitting if the same (valve, action) already went
+            # out within the last 10 sim-seconds. Always emit on action change
+            # (the user needs to see escalation) and always emit on executed
+            # actions (those change physical state).
+            last = self._last_emitted_recovery.get(target_valve_id)
+            same_action_recent = (
+                last is not None
+                and last[0] == decision.action
+                and (tick - last[1]) < 10
+            )
+            if same_action_recent and not executed and not promoted:
+                return
+            self._last_emitted_recovery[target_valve_id] = (decision.action, tick)
             msg = {
                 "type": "remediation",
                 "branch_id": branch_id,
