@@ -1,12 +1,14 @@
 """FastAPI app for ChillValve. PRD §7."""
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
+import sim._env  # noqa: F401  — auto-loads .env
 from backend.db import open_db, query_history, write_operational_batch
 from backend.models import (
     HealthResponse,
@@ -18,13 +20,14 @@ from backend.models import (
 from backend.orchestrator import EngineService
 from backend.websocket import drain_queue
 
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "chillvalve.db"
+DB_PATH = Path(os.environ.get("CHILLVALVE_DB_PATH", "")) if os.environ.get("CHILLVALVE_DB_PATH") else Path(__file__).resolve().parent.parent / "data" / "chillvalve.db"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     conn = open_db(DB_PATH)
-    engine = EngineService()
+    tick_period = float(os.environ.get("CHILLVALVE_TICK_PERIOD_S", "0.05"))
+    engine = EngineService(tick_period_s=tick_period)
     engine.attach_db_writer(lambda rows: write_operational_batch(conn, rows))
     app.state.engine = engine
     app.state.db = conn

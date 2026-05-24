@@ -22,6 +22,8 @@ import os
 from dataclasses import dataclass, field
 from typing import Dict, Optional
 
+import sim._env  # noqa: F401  — auto-loads .env
+
 log = logging.getLogger(__name__)
 
 MODEL = "gemini-2.5-flash"

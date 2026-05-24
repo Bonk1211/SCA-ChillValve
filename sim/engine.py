@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+import sim._env  # noqa: F401  — auto-loads .env
 from sim.coil import Coil
 from sim.controllers.belimo_baseline import BelimoController
 from sim.controllers.chillvalve import ChillValveController

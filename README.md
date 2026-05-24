@@ -80,7 +80,27 @@ Phase 7 (integration polish + demo recording).
 See PRD §3 for the canonical tree.
 
 
-## Optional: LLM event narration
+## Environment
+
+```bash
+cp .env.example .env
+# Edit .env to set GEMINI_API_KEY, CHILLVALVE_TICK_PERIOD_S, etc.
+```
+
+`.env` is auto-loaded by `sim/_env.py` on import of `sim.engine`,
+`backend.main`, or `backend.explainer`. `.env` is gitignored; never
+committed. The `.env.example` template lists every variable the codebase
+reads.
+
+Supported variables:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `GEMINI_API_KEY` or `GOOGLE_API_KEY` | (unset) | Enable LLM leader-event narration. Without it the explainer falls back to deterministic templates. |
+| `CHILLVALVE_TICK_PERIOD_S` | `0.05` | Wall-clock seconds per simulated second. Lower = faster demo playback. |
+| `CHILLVALVE_DB_PATH` | `data/chillvalve.db` | SQLite path. |
+
+### Optional: LLM event narration
 
 Leader-election events get an LLM-generated one-line explanation in the
 dashboard event log when a Gemini API key is configured. Without a key,
@@ -88,7 +108,7 @@ the explainer falls back to a deterministic template — everything else
 keeps working.
 
 ```bash
-export GEMINI_API_KEY=your_key   # or GOOGLE_API_KEY
+echo "GEMINI_API_KEY=your_key" >> .env
 uv run uvicorn backend.main:app --port 8000
 ```
 
