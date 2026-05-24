@@ -14,7 +14,7 @@ function Button({ children, ...props }) {
 }
 
 export default function ScenarioControls() {
-  const [scenario] = useState("steady_state");
+  const [scenario, setScenario] = useState("steady_state");
   const [mode, setMode] = useState("chillvalve");
   const addEvent = useDashboardStore((s) => s.addEvent);
   const reset = useDashboardStore((s) => s.reset);
@@ -30,8 +30,9 @@ export default function ScenarioControls() {
 
   return (
     <div className="flex items-center gap-2">
-      <select className="bg-slate-700 px-2 py-1 rounded text-xs" value={scenario} disabled>
+      <select className="bg-slate-700 px-2 py-1 rounded text-xs" value={scenario} onChange={(e) => setScenario(e.target.value)}>
         <option value="steady_state">steady_state</option>
+        <option value="fault_injection">fault_injection</option>
       </select>
       <select
         className="bg-slate-700 px-2 py-1 rounded text-xs"

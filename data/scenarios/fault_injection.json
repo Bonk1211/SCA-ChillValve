@@ -1,0 +1,12 @@
+{
+  "name": "fault_injection",
+  "duration_seconds": 1800,
+  "base_load_fraction": 0.70,
+  "fluctuation_amplitude": 0.02,
+  "fluctuation_period_seconds": 300,
+  "valve_ids": [],
+  "fault_target_valve_id": "B2",
+  "fault_start_seconds": 60,
+  "fault_ramp_seconds": 600,
+  "fault_max_severity": 0.50
+}

@@ -96,6 +96,17 @@ async def set_mode(mode: str) -> StatusResponse:
     return StatusResponse(**app.state.engine.status())
 
 
+@app.post("/agent/{valve_id}/kill_leader", response_model=StatusResponse)
+async def kill_leader(valve_id: str) -> StatusResponse:
+    try:
+        await app.state.engine.kill_leader(valve_id)
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(409, str(e)) from e
+    return StatusResponse(**app.state.engine.status())
+
+
 @app.get("/history", response_model=HistoryResponse)
 async def history(
     since: float = Query(0.0, description="Tick number or Unix seconds"),

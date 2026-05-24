@@ -41,6 +41,7 @@ class ValveRecord:
     coil: Coil
     position: float = 0.5
     commanded_position: float = 0.5
+    flow_multiplier: float = 1.0   # 1.0 = healthy; <1.0 = fouling/fault
 
 
 @dataclass
@@ -78,7 +79,7 @@ class HydraulicSystem:
     def _total_supply_at_head(self, head_kpa: float) -> float:
         """Sum of valve flows in both branches at a common available head."""
         return sum(
-            rec.valve.flow_gpm(rec.position, head_kpa)
+            rec.valve.flow_gpm(rec.position, head_kpa) * rec.flow_multiplier
             for rec in self.valves.values()
         )
 
@@ -104,7 +105,7 @@ class HydraulicSystem:
         now = datetime.utcnow()
         out: List[ValveState] = []
         for rec in self.valves.values():
-            flow = rec.valve.flow_gpm(rec.position, head)
+            flow = rec.valve.flow_gpm(rec.position, head) * rec.flow_multiplier
             dT = rec.coil.achieved_dT(flow)
             out.append(ValveState(
                 flow_gpm=flow,
@@ -129,6 +130,11 @@ class HydraulicSystem:
                 branch_id=rec.branch_id,
             ))
         return out
+
+    def set_fault_severity(self, valve_id: str, severity: float) -> None:
+        """Apply fouling/fault to a valve. severity in [0, 1]; flow scaled by (1 - severity)."""
+        if valve_id in self.valves:
+            self.valves[valve_id].flow_multiplier = max(0.0, 1.0 - severity)
 
     def pump_power_kw(self) -> float:
         q = self.solve_network()

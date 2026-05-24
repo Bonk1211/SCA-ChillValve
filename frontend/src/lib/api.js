@@ -20,5 +20,6 @@ export const api = {
   resume: () => post("/scenario/resume"),
   reset: () => post("/scenario/reset"),
   setMode: (mode) => post(`/mode/${mode}`),
+  killLeader: (vid) => post(`/agent/${vid}/kill_leader`),
   health: () => get("/health"),
 };

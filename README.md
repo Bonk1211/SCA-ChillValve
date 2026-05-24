@@ -14,6 +14,9 @@ uv run python scripts/plot_cv_curves.py   # writes docs/cv_curves.png
 ## Run a scenario from the CLI
 
 ```bash
+# Scenarios: `steady_state` (60 min benign) or `fault_injection` (30 min, B2 fouling)
+uv run python -m sim.engine --scenario steady_state --mode belimo
+uv run python -m sim.engine --scenario fault_injection --mode chillvalve
 uv run python -m sim.engine --mode belimo
 uv run python -m sim.engine --mode chillvalve
 uv run python -m sim.engine --mode compare
@@ -59,7 +62,7 @@ cd frontend && npm run build                             # production build
 
 ## Status
 
-Phase 6 (React + Vite Dashboard) — complete.
+Phase 7 (Integration & Polish) — complete.
 
 - Vite + React 19 + Tailwind v3 + Zustand + Recharts + framer-motion
 - `useWebSocket` hook auto-reconnects with exponential backoff

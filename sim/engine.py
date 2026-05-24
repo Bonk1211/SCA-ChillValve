@@ -75,6 +75,7 @@ def _run_single(
                 design_dT_C=rec.coil.design_dT_C,
                 load_fraction=scenario.load_fraction(rec.valve_id, t),
             )
+            system.set_fault_severity(rec.valve_id, scenario.fault_severity(rec.valve_id, t))
 
         # 1. Observe current state.
         states = system.tick(t)

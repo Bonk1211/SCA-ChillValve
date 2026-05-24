@@ -109,6 +109,26 @@ class EngineService:
         self._stop = None
         self._paused = None
 
+    async def kill_leader(self, valve_id: str) -> None:
+        """Simulate leader failure. Drops is_leader on the targeted agent and
+        backdates all branch members' heartbeats so the next election fires
+        immediately. Only valid in chillvalve mode."""
+        if self._task is None or self._task.done():
+            raise RuntimeError("engine not started")
+        if self._mode != "chillvalve":
+            raise RuntimeError("kill_leader requires chillvalve mode")
+        ctrl = self._controller
+        agents = getattr(ctrl, "agents", {})
+        if valve_id not in agents:
+            raise ValueError(f"unknown valve_id: {valve_id!r}")
+        target_branch = agents[valve_id].branch_id
+        agents[valve_id].is_leader = False
+        agents[valve_id].is_dead = True
+        agents[valve_id].last_leader_heartbeat = -1e9
+        for vid, ag in agents.items():
+            if vid != valve_id and ag.branch_id == target_branch:
+                ag.last_leader_heartbeat = -1e9
+
     async def set_mode(self, mode: str) -> None:
         if mode not in ("belimo", "chillvalve"):
             raise ValueError(f"unsupported mode: {mode!r}")
@@ -166,6 +186,9 @@ class EngineService:
                 design_flow_gpm=rec.coil.design_flow_gpm,
                 design_dT_C=rec.coil.design_dT_C,
                 load_fraction=self._scenario.load_fraction(rec.valve_id, t),
+            )
+            self._system.set_fault_severity(
+                rec.valve_id, self._scenario.fault_severity(rec.valve_id, t)
             )
         states = self._system.tick(t)
         if self._mode == "belimo":
