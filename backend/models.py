@@ -100,3 +100,22 @@ class WSDebateMessage(BaseModel):
     rationale: str
     cached: bool
     wall_clock_s: float
+
+
+class WSRemediationMessage(BaseModel):
+    """Autonomous Layer-3 recovery decision. Emitted after a sustained
+    anomaly that peer-reallocation did not resolve. The elected branch
+    leader picks one of three actions; the engine executes any whose effect
+    is in-band of the simulator (currently: attempt_actuator_reset)."""
+    type: Literal["remediation"] = "remediation"
+    branch_id: str
+    target_valve_id: str
+    leader_id: str
+    tick: int
+    action: Literal[
+        "attempt_actuator_reset", "schedule_maintenance", "accept_degradation"
+    ]
+    rationale: str
+    executed: bool
+    text: str
+    wall_clock_s: float

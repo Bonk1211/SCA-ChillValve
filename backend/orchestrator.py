@@ -12,7 +12,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from backend.debate import DebateRunner, is_uncertain_branch
+from backend.debate import (
+    RECOVERY_ANOMALY_PERSISTENCE_S,
+    DebateRunner,
+    is_uncertain_branch,
+)
 from backend.explainer import Explainer
 from sim.coil import Coil
 from sim.controllers.belimo_baseline import BelimoController
@@ -50,6 +54,11 @@ class EngineService:
     _debate_overrides: Dict[str, float] = field(default_factory=dict, repr=False)
     _debate_in_flight: Dict[str, bool] = field(default_factory=dict, repr=False)
     _fault_overrides: Dict[str, float] = field(default_factory=dict, repr=False)
+    _anomaly_first_tick: Dict[str, int] = field(default_factory=dict, repr=False)
+    _anomaly_last_tick: Dict[str, int] = field(default_factory=dict, repr=False)
+    _recovery_in_flight: Dict[str, bool] = field(default_factory=dict, repr=False)
+    _post_recovery_grace_until: Dict[str, int] = field(default_factory=dict, repr=False)
+    _bg_tasks: set = field(default_factory=set, repr=False)
 
     def attach_db_writer(self, writer: Callable[[List[tuple]], None]) -> None:
         self._db_writer = writer
@@ -118,6 +127,14 @@ class EngineService:
         self._stop = None
         self._paused = None
         self._fault_overrides.clear()
+        self._anomaly_first_tick.clear()
+        self._anomaly_last_tick.clear()
+        self._recovery_in_flight.clear()
+        self._post_recovery_grace_until.clear()
+        # Cancel + drop any orphan background tasks from a previous run.
+        for t in list(self._bg_tasks):
+            t.cancel()
+        self._bg_tasks.clear()
 
     async def kill_leader(self, valve_id: str) -> None:
         """Simulate leader failure. Drops is_leader on the targeted agent and
@@ -189,7 +206,9 @@ class EngineService:
             await self._fanout(snapshot)
             await self._detect_leader_changes(snapshot)
             if self._mode == "chillvalve":
+                self._track_anomalies(snapshot)
                 await self._maybe_run_debate(snapshot)
+                await self._maybe_run_recovery(snapshot)
             if self._db_writer is not None:
                 self._buffer_operational(snapshot)
                 if time.monotonic() - self._last_flush_at >= OP_FLUSH_INTERVAL_S:
@@ -222,8 +241,12 @@ class EngineService:
         if self._mode == "belimo":
             commands = self._controller.step(states)  # type: ignore[union-attr]
         else:
-            overrides = dict(self._debate_overrides)
-            self._debate_overrides.clear()  # one-shot — applied this tick only
+            # Atomic swap: take the current overrides and replace with empty
+            # dict in one bytecode step. Without this, the event-loop-side
+            # _run_and_apply_debate can write between `dict(...)` and `clear()`
+            # and lose an allocation. The single attribute assignment is GIL-atomic.
+            overrides = self._debate_overrides
+            self._debate_overrides = {}
             commands = self._controller.step(
                 states, t_seconds=float(t), debate_overrides=overrides,
             )  # type: ignore[union-attr]
@@ -270,6 +293,8 @@ class EngineService:
         branch isn't already debating and cooldown has elapsed, spawn a
         debate task. Result lands in self._debate_overrides for the next
         controller.step to consume."""
+        if self._scenario is not None and self._scenario.disable_debate:
+            return
         branches: Dict[str, List[Dict[str, Any]]] = {}
         for v in snapshot["valves"]:
             branches.setdefault(v["branch_id"], []).append(v)
@@ -284,9 +309,11 @@ class EngineService:
             if leader is None:
                 continue
             self._debate_in_flight[branch_id] = True
-            asyncio.create_task(
+            task = asyncio.create_task(
                 self._run_and_apply_debate(branch_id, leader, valves, snapshot["tick"])
             )
+            self._bg_tasks.add(task)
+            task.add_done_callback(self._bg_tasks.discard)
 
     async def _run_and_apply_debate(
         self, branch_id: str, leader_id: str,
@@ -319,6 +346,137 @@ class EngineService:
         finally:
             self._debate_in_flight[branch_id] = False
 
+    def _track_anomalies(self, snapshot: Dict[str, Any]) -> None:
+        """Maintain per-valve 'first tick anomaly went true' + 'last tick
+        anomaly was true', tolerating short flickers. Pops only after the
+        anomaly has been absent for ANOMALY_FLICKER_GRACE_S sim-seconds.
+        Also honors a post-recovery grace window so we don't re-track a
+        valve that was just remediated."""
+        t = snapshot["tick"]
+        ANOMALY_FLICKER_GRACE_S = 5
+        for v in snapshot["valves"]:
+            vid = v["valve_id"]
+            grace = self._post_recovery_grace_until.get(vid)
+            if grace is not None and t < grace:
+                # Skip tracking entirely while the hydraulic state catches up
+                # after a recovery action.
+                continue
+            if v["anomaly_detected"]:
+                self._anomaly_first_tick.setdefault(vid, t)
+                self._anomaly_last_tick[vid] = t
+            else:
+                last_seen = self._anomaly_last_tick.get(vid)
+                if last_seen is None or (t - last_seen) > ANOMALY_FLICKER_GRACE_S:
+                    self._anomaly_first_tick.pop(vid, None)
+                    self._anomaly_last_tick.pop(vid, None)
+
+    async def _maybe_run_recovery(self, snapshot: Dict[str, Any]) -> None:
+        """Per-valve: if anomaly has persisted past the threshold and no
+        recovery is in flight, spawn a recovery-debate task. LLM picks
+        the corrective action; we execute it on the next tick."""
+        if self._scenario is not None and self._scenario.disable_debate:
+            return
+        tick = snapshot["tick"]
+        # Group valves by branch so we can pass the right peer list.
+        branches: Dict[str, List[Dict[str, Any]]] = {}
+        for v in snapshot["valves"]:
+            branches.setdefault(v["branch_id"], []).append(v)
+        for vid, first_tick in list(self._anomaly_first_tick.items()):
+            age_s = float(tick - first_tick)
+            if age_s < RECOVERY_ANOMALY_PERSISTENCE_S:
+                continue
+            if self._recovery_in_flight.get(vid):
+                continue
+            if not self._debate.can_recover(vid, float(tick)):
+                continue
+            # Find the valve's branch + leader.
+            target = next(
+                (v for v in snapshot["valves"] if v["valve_id"] == vid), None
+            )
+            if target is None:
+                continue
+            branch_id = target["branch_id"]
+            branch_valves = branches.get(branch_id, [])
+            leader_id = next(
+                (v["valve_id"] for v in branch_valves if v["is_leader"]), None
+            )
+            if leader_id is None:
+                continue
+            self._recovery_in_flight[vid] = True
+            task = asyncio.create_task(
+                self._run_and_apply_recovery(
+                    branch_id, vid, leader_id, branch_valves, tick, age_s
+                )
+            )
+            self._bg_tasks.add(task)
+            task.add_done_callback(self._bg_tasks.discard)
+
+    async def _run_and_apply_recovery(
+        self,
+        branch_id: str,
+        target_valve_id: str,
+        leader_id: str,
+        valves: List[Dict[str, Any]],
+        tick: int,
+        anomaly_age_s: float,
+    ) -> None:
+        """Run a recovery debate, then execute the LLM's chosen action."""
+        try:
+            decision = await self._debate.run_recovery_debate(
+                branch_id, target_valve_id, leader_id, valves, float(tick), anomaly_age_s,
+            )
+            if decision is None:
+                return
+            executed_text = decision.rationale
+            executed = False
+            if decision.action == "attempt_actuator_reset":
+                # The LLM has decided to attempt a soft actuator reset.
+                # In the sim this translates to clearing the runtime fault
+                # override (flow_multiplier returns to 1.0 because the
+                # scenario's own fault_severity is what _tick_once falls
+                # back to via dict.get default). On a real valve this would
+                # issue an actuator power-cycle command.
+                # Use pop() to match the contract used by inject_fault — that
+                # way a later inject_fault(vid, 0) call has the same effect.
+                # NOTE: this only "heals" B2 in the demo because the scenario's
+                # own fault_severity is now treated as the ground truth; for
+                # the current demo scenario the engine intentionally re-emits
+                # zero severity post-pop because scenario.fault_severity stays
+                # at fault_max_severity. So we ALSO override to 0.0 explicitly
+                # via a separate "engine cleared" marker.
+                self._fault_overrides[target_valve_id] = 0.0
+                self._anomaly_first_tick.pop(target_valve_id, None)
+                self._anomaly_last_tick.pop(target_valve_id, None)
+                # Block _track_anomalies from re-recording for ~5s while the
+                # hydraulic state catches up; otherwise the next tick re-flags
+                # the valve as anomalous and pollutes the L2 panel.
+                self._post_recovery_grace_until[target_valve_id] = tick + 5
+                executed = True
+                executed_text = f"actuator soft-reset issued; {executed_text}"
+            elif decision.action == "schedule_maintenance":
+                executed_text = f"maintenance work-order filed; {executed_text}"
+            elif decision.action == "accept_degradation":
+                executed_text = f"degradation accepted; {executed_text}"
+            msg = {
+                "type": "remediation",
+                "branch_id": branch_id,
+                "target_valve_id": target_valve_id,
+                "leader_id": leader_id,
+                "tick": decision.tick,
+                "action": decision.action,
+                "rationale": decision.rationale,
+                "executed": executed,
+                "text": executed_text,
+                "wall_clock_s": round(decision.wall_clock_s, 2),
+            }
+            for q in self._subscribers:
+                try:
+                    q.put_nowait(msg)
+                except asyncio.QueueFull:
+                    pass
+        finally:
+            self._recovery_in_flight[target_valve_id] = False
+
     async def _detect_leader_changes(self, snapshot: Dict[str, Any]) -> None:
         """Compare current leader per branch against last snapshot; spawn an
         async explanation task on transitions. Non-blocking."""
@@ -335,9 +493,11 @@ class EngineService:
                     "boot" if prev is None else "election"
                 )
                 self._killed_recently.pop(branch, None)
-                asyncio.create_task(
+                task = asyncio.create_task(
                     self._explain_and_fanout(branch, prev, new_leader, cause, snapshot["tick"])
                 )
+                self._bg_tasks.add(task)
+                task.add_done_callback(self._bg_tasks.discard)
             # Only update when a leader exists; leaderless interim preserves the
             # previous leader so the next election's explanation has the right
             # "previous_leader" attribution.

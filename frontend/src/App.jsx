@@ -1,20 +1,24 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useWebSocket } from "./hooks/useWebSocket";
 import { useDashboardStore } from "./store/useDashboardStore";
 import { api } from "./lib/api";
-import { STORYBOARD } from "./components/v5/storyboard";
+import {
+  SCENARIOS,
+  SCENARIO_BY_ID,
+  reverseScenarioLookup,
+  runScenario,
+} from "./components/v5/scenarios";
 import TitleBar from "./components/v5/TitleBar";
-import StoryStrip from "./components/v5/StoryStrip";
-import ScenarioBanner from "./components/v5/ScenarioBanner";
+import ScenarioPicker from "./components/v5/ScenarioPicker";
 import KpiTrio from "./components/v5/KpiTrio";
 import FlowChart from "./components/v5/FlowChart";
 import Schematic from "./components/v5/Schematic";
 import ValveTable from "./components/v5/ValveTable";
 import EventLog from "./components/v5/EventLog";
+import DebateStage from "./components/v5/DebateStage";
 import ControlBar from "./components/v5/ControlBar";
 
 const POLL_HEALTH_MS = 2000;
-const TOTAL_STEPS = STORYBOARD.length;
 
 function SidebarHandle({ side, open, onToggle, label }) {
   const isLeft = side === "left";
@@ -71,20 +75,35 @@ export default function App() {
   const setEngineStatus = useDashboardStore((s) => s.setEngineStatus);
   const addEvent = useDashboardStore((s) => s.addEvent);
 
-  const [stepIdx, setStepIdx] = useState(0);
+  const [currentScenarioId, setCurrentScenarioId] = useState(null);
   const [selectedValveId, setSelectedValveId] = useState("B2");
   const [busy, setBusy] = useState(false);
   const [leftOpen, setLeftOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
+  // Synchronous busy guard — React state takes a commit cycle to propagate, so
+  // a rapid double-click on START can fire two pickScenario before the first
+  // setBusy(true) renders. This ref updates atomically.
+  const busyRef = useRef(false);
 
   const LEFT_OPEN_W = 300;
-  const RIGHT_OPEN_W = 320;
+  const RIGHT_OPEN_W = 420;
   const COLLAPSED_W = 22;
 
   useEffect(() => {
     const tick = async () => {
       try {
-        setEngineStatus(await api.health());
+        const h = await api.health();
+        setEngineStatus(h);
+        // Hydrate currentScenarioId from backend on first connect / browser
+        // refresh — otherwise the ScenarioBanner shows empty state while the
+        // engine is actively running a scenario picked in a prior session.
+        if (
+          h.scenario &&
+          SCENARIO_BY_ID[reverseScenarioLookup(h.scenario)] &&
+          currentScenarioId == null
+        ) {
+          setCurrentScenarioId(reverseScenarioLookup(h.scenario));
+        }
       } catch {
         /* backend down — ignore */
       }
@@ -92,69 +111,55 @@ export default function App() {
     tick();
     const id = setInterval(tick, POLL_HEALTH_MS);
     return () => clearInterval(id);
-  }, [setEngineStatus]);
+  }, [setEngineStatus, currentScenarioId]);
 
-  const fireStep = async (idx) => {
-    const step = STORYBOARD[idx];
-    if (!step) return;
-    setBusy(true);
-    addEvent("story", `STEP ${idx + 1} · ${step.label} — ${step.headline}`);
-    try {
-      await step.onEnter();
-    } catch (e) {
-      addEvent("rule", `step ${idx + 1} failed: ${e?.message ?? e}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const goToStep = async (targetIdx) => {
-    if (targetIdx < 0 || targetIdx >= TOTAL_STEPS || busy) return;
-    if (targetIdx > stepIdx) {
-      for (let i = stepIdx + 1; i <= targetIdx; i++) {
-        await fireStep(i);
-      }
-    } else if (targetIdx < stepIdx) {
-      addEvent("ctrl", `jumped back to step ${targetIdx + 1} · ${STORYBOARD[targetIdx].label}`);
-    }
-    setStepIdx(targetIdx);
-  };
-
-  const handleNext = () => goToStep(stepIdx + 1);
-  const handlePrev = () => goToStep(stepIdx - 1);
-  const handleReplay = async () => {
-    if (busy) return;
+  const pickScenario = async (id) => {
+    if (busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
     try {
-      await api.reset().catch(() => {});
       useDashboardStore.getState().reset();
-      setStepIdx(0);
-      await fireStep(0);
+      const s = await runScenario(id);
+      setCurrentScenarioId(id);
+      addEvent("ctrl", `scenario started · ${s.label} (${s.backendName})`);
+    } catch (e) {
+      addEvent("rule", `scenario start failed: ${e?.message ?? e}`);
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
+  };
+
+  const handleReplay = async () => {
+    if (busyRef.current || !currentScenarioId) return;
+    await pickScenario(currentScenarioId);
   };
 
   const handleStart = async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      if (engineStatus.engine === "paused") {
+    if (busyRef.current) return;
+    if (engineStatus.engine === "paused") {
+      busyRef.current = true;
+      setBusy(true);
+      try {
         await api.resume();
         addEvent("ctrl", "engine resumed");
-      } else if (engineStatus.engine === "idle") {
-        await fireStep(0);
-        setStepIdx(0);
+      } finally {
+        busyRef.current = false;
+        setBusy(false);
       }
-    } catch (e) {
-      addEvent("rule", `start failed: ${e?.message ?? e}`);
-    } finally {
-      setBusy(false);
+      return;
+    }
+    if (engineStatus.engine === "idle") {
+      // Default to the first scenario if user hasn't picked one yet — keeps
+      // the prominent green START button from looking broken on first load.
+      const targetId = currentScenarioId || SCENARIOS[0]?.id;
+      if (targetId) await pickScenario(targetId);
     }
   };
 
   const handleStop = async () => {
-    if (busy) return;
+    if (busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
     try {
       await api.pause();
@@ -162,16 +167,12 @@ export default function App() {
     } catch (e) {
       addEvent("rule", `stop failed: ${e?.message ?? e}`);
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   };
 
-  useEffect(() => {
-    fireStep(0);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const currentStep = STORYBOARD[stepIdx];
+  const currentScenario = currentScenarioId ? SCENARIO_BY_ID[currentScenarioId] : null;
 
   return (
     <div
@@ -187,15 +188,14 @@ export default function App() {
       }}
     >
       <TitleBar
-        stepIdx={stepIdx}
-        totalSteps={TOTAL_STEPS}
         connection={connection}
         engineStatus={engineStatus}
       />
-      <StoryStrip stepIdx={stepIdx} onJump={goToStep} />
-      <div style={{ padding: "6px 8px 0 8px" }}>
-        <ScenarioBanner step={currentStep} />
-      </div>
+      <ScenarioPicker
+        currentId={currentScenarioId}
+        onPick={pickScenario}
+        busy={busy}
+      />
 
       <div
         style={{
@@ -248,7 +248,17 @@ export default function App() {
           />
         </div>
 
-        {/* CENTER — hydraulic schematic */}
+        {/* CENTER — schematic on top, debate stage below */}
+        <div
+          style={{
+            display: "grid",
+            gridTemplateRows: "1fr auto",
+            gap: 6,
+            minWidth: 0,
+            minHeight: 0,
+            overflow: "hidden",
+          }}
+        >
         <div
           style={{
             background: "#0f1a30",
@@ -304,6 +314,8 @@ export default function App() {
             />
           </div>
         </div>
+        <DebateStage />
+        </div>
 
         {/* RIGHT — valve table + event log */}
         <div
@@ -329,8 +341,37 @@ export default function App() {
               <div style={{ minHeight: 0, minWidth: 0 }}>
                 <ValveTable selectedId={selectedValveId} onSelect={setSelectedValveId} />
               </div>
-              <div style={{ minHeight: 0, minWidth: 0, gridColumn: "2 / 3" }}>
-                <EventLog />
+              <div
+                style={{
+                  minHeight: 0,
+                  minWidth: 0,
+                  gridColumn: "2 / 3",
+                  display: "grid",
+                  gridTemplateRows: "1fr 1fr 1.4fr",
+                  gap: 5,
+                }}
+              >
+                <EventLog
+                  title="RULES · L1"
+                  layerBadge="L1"
+                  accent="#f87171"
+                  kinds={["rule", "fault"]}
+                  emptyText="no Layer-1 rules fired"
+                />
+                <EventLog
+                  title="ML ANOMALY · L2"
+                  layerBadge="L2"
+                  accent="#fbbf24"
+                  kinds={["anomaly"]}
+                  emptyText="no Layer-2 anomalies"
+                />
+                <EventLog
+                  title="COORDINATION · L3"
+                  layerBadge="L3"
+                  accent="#a78bfa"
+                  kinds={["debate", "remediation", "leader", "election", "ctrl", "story"]}
+                  emptyText="no Layer-3 coordination events"
+                />
               </div>
             </>
           )}
@@ -338,15 +379,12 @@ export default function App() {
       </div>
 
       <ControlBar
-        stepIdx={stepIdx}
-        totalSteps={TOTAL_STEPS}
-        onPrev={handlePrev}
-        onNext={handleNext}
         onReplay={handleReplay}
         onStart={handleStart}
         onStop={handleStop}
         busy={busy}
         engineState={engineStatus.engine}
+        canReplay={currentScenarioId != null}
       />
     </div>
   );

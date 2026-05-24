@@ -25,7 +25,7 @@ import sim._env  # noqa: F401  — auto-loads .env
 
 log = logging.getLogger(__name__)
 
-MODEL = "deepseek-v4-flash"
+MODEL = "deepseek-chat"
 BASE_URL = "https://api.deepseek.com"
 
 SYSTEM_PROMPT = (

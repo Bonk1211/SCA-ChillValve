@@ -28,6 +28,10 @@ class Scenario:
     fault_ramp_seconds: int = 1200
     fault_max_severity: float = 0.0
 
+    # Demo control: when true, Layer-3 LLM debate is suppressed so the scenario
+    # exercises only L1 (deterministic rules) + L2 (ML anomaly detection).
+    disable_debate: bool = False
+
     def load_fraction(self, valve_id: str, t_seconds: int) -> float:
         phase = (hash(valve_id) % 1000) / 1000.0
         omega = 2.0 * math.pi / self.fluctuation_period_seconds

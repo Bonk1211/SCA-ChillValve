@@ -1,5 +1,4 @@
-export default function TitleBar({ stepIdx, totalSteps, connection, engineStatus }) {
-  const pct = ((stepIdx + 1) / totalSteps) * 100;
+export default function TitleBar({ connection, engineStatus }) {
   const connColor =
     { connected: "#34d399", connecting: "#fbbf24", disconnected: "#f87171" }[connection] ||
     "#9aacc8";
@@ -33,7 +32,7 @@ export default function TitleBar({ stepIdx, totalSteps, connection, engineStatus
                 letterSpacing: "0.08em",
               }}
             >
-              STEP-THROUGH DEMO · v5 · LIVE
+              AUTONOMOUS SCENARIO DEMO · v5 · LIVE
             </span>
           </div>
           <div
@@ -66,29 +65,6 @@ export default function TitleBar({ stepIdx, totalSteps, connection, engineStatus
           {engineStatus.tick > 0 && ` · t=${engineStatus.tick}`}
           {engineStatus.mode && ` · ${engineStatus.mode}`}
         </span>
-        <div className="mono" style={{ fontSize: 13, color: "#d1dcec", fontWeight: 600 }}>
-          <span style={{ color: "#9aacc8" }}>STEP </span>
-          <span style={{ color: "#fff", fontWeight: 700 }}>{stepIdx + 1}</span>
-          <span style={{ color: "#9aacc8" }}> / {totalSteps}</span>
-        </div>
-        <div
-          style={{
-            width: 200,
-            height: 6,
-            background: "#1a2640",
-            borderRadius: 3,
-            overflow: "hidden",
-          }}
-        >
-          <div
-            style={{
-              width: `${pct}%`,
-              height: "100%",
-              background: "linear-gradient(90deg, #22d3ee, #34d399)",
-              transition: "width 0.3s",
-            }}
-          />
-        </div>
       </div>
     </div>
   );

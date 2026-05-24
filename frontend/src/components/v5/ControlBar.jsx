@@ -30,18 +30,13 @@ function BigButton({ onClick, color, outline, icon, children, disabled }) {
 }
 
 export default function ControlBar({
-  stepIdx,
-  totalSteps,
-  onPrev,
-  onNext,
   onReplay,
   onStart,
   onStop,
   busy,
   engineState,    // "idle" | "running" | "paused"
+  canReplay,      // false if no scenario picked yet
 }) {
-  const atStart = stepIdx === 0;
-  const atEnd = stepIdx === totalSteps - 1;
   const isRunning = engineState === "running";
   const isPaused = engineState === "paused";
   return (
@@ -66,7 +61,7 @@ export default function ControlBar({
           </svg>
         }
       >
-        {isPaused ? "RESUME" : "START"}
+        {busy ? "WORKING…" : isPaused ? "RESUME" : "START"}
       </BigButton>
       <BigButton
         onClick={onStop}
@@ -83,35 +78,10 @@ export default function ControlBar({
       </BigButton>
       <span style={{ width: 1, height: 22, background: "#2d3d5e", margin: "0 4px" }} />
       <BigButton
-        onClick={onPrev}
-        disabled={atStart || busy}
-        color="#9aacc8"
-        outline
-        icon={
-          <svg width="14" height="14" viewBox="0 0 14 14">
-            <polygon points="11,2 2,7 11,12" fill="#9aacc8" />
-          </svg>
-        }
-      >
-        PREV
-      </BigButton>
-      <BigButton
-        onClick={onNext}
-        disabled={atEnd || busy}
-        color="#22d3ee"
-        icon={
-          <svg width="14" height="14" viewBox="0 0 14 14">
-            <polygon points="3,2 12,7 3,12" fill="#0a1224" />
-          </svg>
-        }
-      >
-        {busy ? "WORKING…" : "NEXT STEP ›"}
-      </BigButton>
-      <BigButton
         onClick={onReplay}
         color="#fbbf24"
         outline
-        disabled={busy}
+        disabled={busy || !canReplay}
         icon={
           <svg width="14" height="14" viewBox="0 0 14 14">
             <path

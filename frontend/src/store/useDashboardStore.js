@@ -10,6 +10,7 @@ export const useDashboardStore = create((set, get) => ({
   events: [],
   debates: [],
   engineStatus: { engine: "idle", tick: 0, scenario: null, mode: null },
+  latestRemediation: null,
 
   setConnection: (c) => set({ connection: c }),
   setEngineStatus: (s) => set({ engineStatus: s }),
@@ -106,5 +107,23 @@ export const useDashboardStore = create((set, get) => ({
     set({ debates, events });
   },
 
-  reset: () => set({ latest: null, history: {}, events: [], debates: [] }),
+  pushRemediation: (msg) => {
+    const actionLabel = (msg.action || "").replaceAll("_", " ").toUpperCase();
+    const events = [...get().events, {
+      ts: Date.now(),
+      kind: "remediation",
+      text: `${msg.target_valve_id} · LEADER → ${actionLabel}${msg.executed ? "" : " (recorded only)"} — ${msg.rationale}`,
+    }];
+    while (events.length > EVENT_LIMIT) events.shift();
+    set({ events, latestRemediation: msg });
+  },
+
+  reset: () =>
+    set({
+      latest: null,
+      history: {},
+      events: [],
+      debates: [],
+      latestRemediation: null,
+    }),
 }));
