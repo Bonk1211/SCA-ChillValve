@@ -49,6 +49,7 @@ class EngineService:
     _debate: DebateRunner = field(default_factory=DebateRunner, repr=False)
     _debate_overrides: Dict[str, float] = field(default_factory=dict, repr=False)
     _debate_in_flight: Dict[str, bool] = field(default_factory=dict, repr=False)
+    _fault_overrides: Dict[str, float] = field(default_factory=dict, repr=False)
 
     def attach_db_writer(self, writer: Callable[[List[tuple]], None]) -> None:
         self._db_writer = writer
@@ -116,6 +117,7 @@ class EngineService:
         self._op_buffer.clear()
         self._stop = None
         self._paused = None
+        self._fault_overrides.clear()
 
     async def kill_leader(self, valve_id: str) -> None:
         """Simulate leader failure. Drops is_leader on the targeted agent and
@@ -138,6 +140,18 @@ class EngineService:
                 ag.last_leader_heartbeat = -1e9
         # Mark the branch so the next leader-change explanation knows the cause.
         self._killed_recently[target_branch] = float(self._tick)
+
+    async def inject_fault(self, valve_id: str, severity: float) -> None:
+        """Runtime fault override. Persists across ticks until cleared.
+        severity=0 clears the override and reverts to scenario-driven faults."""
+        if self._task is None or self._task.done():
+            raise RuntimeError("engine not started")
+        if self._system is None or valve_id not in self._system.valves:
+            raise ValueError(f"unknown valve_id: {valve_id!r}")
+        if severity <= 0:
+            self._fault_overrides.pop(valve_id, None)
+        else:
+            self._fault_overrides[valve_id] = max(0.0, min(1.0, float(severity)))
 
     async def set_mode(self, mode: str) -> None:
         if mode not in ("belimo", "chillvalve"):
@@ -200,9 +214,10 @@ class EngineService:
                 design_dT_C=rec.coil.design_dT_C,
                 load_fraction=self._scenario.load_fraction(rec.valve_id, t),
             )
-            self._system.set_fault_severity(
+            sev = self._fault_overrides.get(
                 rec.valve_id, self._scenario.fault_severity(rec.valve_id, t)
             )
+            self._system.set_fault_severity(rec.valve_id, sev)
         states = self._system.tick(t)
         if self._mode == "belimo":
             commands = self._controller.step(states)  # type: ignore[union-attr]

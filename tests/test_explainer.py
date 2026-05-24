@@ -1,7 +1,7 @@
 """Tests for backend/explainer.py — operator-facing LLM narration.
 
-Runs without a Gemini API key: the explainer's fallback path is deterministic
-and asserted directly. If GEMINI_API_KEY is set, the live call is exercised
+Runs without a DeepSeek API key: the explainer's fallback path is deterministic
+and asserted directly. If DEEPSEEK_API_KEY is set, the live call is exercised
 via test_real_call_returns_nonempty_string (gated on the env var).
 """
 from __future__ import annotations
@@ -15,8 +15,7 @@ from backend.explainer import Explainer
 
 
 def test_fallback_used_when_no_api_key(monkeypatch):
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     e = Explainer()
     assert e._enabled is False
     text = asyncio.run(
@@ -27,8 +26,7 @@ def test_fallback_used_when_no_api_key(monkeypatch):
 
 
 def test_fallback_boot_message(monkeypatch):
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     e = Explainer()
     text = asyncio.run(e.explain_leader_change("B", None, "B1", "boot", 0.0))
     assert "B1" in text
@@ -36,8 +34,7 @@ def test_fallback_boot_message(monkeypatch):
 
 
 def test_cache_hits_avoid_duplicate_calls(monkeypatch):
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     e = Explainer()
     t1 = asyncio.run(e.explain_leader_change("A", "A1", "A2", "killed", 0.0))
     t2 = asyncio.run(e.explain_leader_change("A", "A1", "A2", "killed", 999.0))
@@ -47,8 +44,8 @@ def test_cache_hits_avoid_duplicate_calls(monkeypatch):
 
 
 @pytest.mark.skipif(
-    not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")),
-    reason="no Gemini API key configured",
+    not os.environ.get("DEEPSEEK_API_KEY"),
+    reason="no DeepSeek API key configured",
 )
 def test_real_call_returns_nonempty_string():
     e = Explainer()

@@ -9,13 +9,13 @@ Safety: Layer 1 still validates the final command. If the LLM proposes an
 out-of-range position or one that violates the dP failsafe, Layer 1
 clamps. The debate is allowed to recommend, never to bypass safety.
 
-Cost: 6 LLM calls per debate (5 peers + 1 leader). At Gemini 2.5 Flash
-rates (~$0.0003/call), full scenario costs $0.02–0.10 depending on
-trigger frequency. Cooldown of 30 sim-seconds per branch bounds it.
+Cost: 6 LLM calls per debate (5 peers + 1 leader). Provider: DeepSeek
+(OpenAI-compatible API). Cooldown of 30 sim-seconds per branch bounds
+total spend per scenario.
 
 Failure modes:
-- No GEMINI_API_KEY / GOOGLE_API_KEY → returns None (controller falls
-  back to deterministic allocation)
+- No DEEPSEEK_API_KEY → returns None (controller falls back to
+  deterministic allocation)
 - LLM call fails or returns malformed JSON → returns None
 - LLM proposes positions outside [0, 100] → clamped at the boundary
   (Layer 1 also validates downstream)
@@ -36,7 +36,8 @@ import sim._env  # noqa: F401
 
 log = logging.getLogger(__name__)
 
-MODEL = "gemini-3.1-flash-lite"
+MODEL = "deepseek-v4-flash"
+BASE_URL = "https://api.deepseek.com"
 DEBATE_COOLDOWN_S = 30.0     # sim-seconds per branch
 PEER_SPEECH_MAX_TOKENS = 80
 LEADER_SYNTHESIS_MAX_TOKENS = 250
@@ -108,17 +109,17 @@ class DebateRunner:
     _warned: bool = False
 
     def __post_init__(self) -> None:
-        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        api_key = os.environ.get("DEEPSEEK_API_KEY")
         if not api_key:
-            log.info("Gemini API key not set — debate disabled, deterministic L3 used")
+            log.info("DEEPSEEK_API_KEY not set — debate disabled, deterministic L3 used")
             return
         try:
-            from google import genai
-            self._client = genai.Client(api_key=api_key)
+            from openai import OpenAI
+            self._client = OpenAI(api_key=api_key, base_url=BASE_URL)
             self._enabled = True
             log.info("DebateRunner enabled (%s)", MODEL)
         except Exception as e:
-            log.warning("failed to init Gemini client for debate: %s", e)
+            log.warning("failed to init DeepSeek client for debate: %s", e)
 
     def can_debate(self, branch_id: str, t_seconds: float) -> bool:
         if not self._enabled:
@@ -247,17 +248,16 @@ class DebateRunner:
 
     def _call_llm(self, system_instruction: str, prompt: str, max_tokens: int) -> Optional[str]:
         try:
-            from google.genai import types
-            resp = self._client.models.generate_content(
+            resp = self._client.chat.completions.create(
                 model=MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    temperature=0.4,
-                    max_output_tokens=max_tokens,
-                ),
+                messages=[
+                    {"role": "system", "content": system_instruction},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.4,
+                max_tokens=max_tokens,
             )
-            text = (resp.text or "").strip()
+            text = (resp.choices[0].message.content or "").strip()
             return text or None
         except Exception as e:
             if not self._warned:

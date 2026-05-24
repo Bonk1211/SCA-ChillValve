@@ -6,12 +6,11 @@ run identically regardless of whether explanations are enabled. The
 explainer reads events that already happened and generates a one-line
 narration for the dashboard's event log.
 
-Provider: Gemini 2.5 Flash via google-genai. Cheap, fast (~0.5–1s),
-caches deterministically.
+Provider: DeepSeek (OpenAI-compatible API at https://api.deepseek.com).
 
 Failure modes:
-- GEMINI_API_KEY (or GOOGLE_API_KEY) not set → falls back to a
-  deterministic explanation string. No exception, no log spam.
+- DEEPSEEK_API_KEY not set → falls back to a deterministic explanation
+  string. No exception, no log spam.
 - Network error / quota exceeded → falls back, logs a single warning.
 """
 from __future__ import annotations
@@ -26,7 +25,8 @@ import sim._env  # noqa: F401  — auto-loads .env
 
 log = logging.getLogger(__name__)
 
-MODEL = "gemini-3.1-flash-lite"
+MODEL = "deepseek-v4-flash"
+BASE_URL = "https://api.deepseek.com"
 
 SYSTEM_PROMPT = (
     "You are an HVAC operator's assistant. You narrate leader-election events "
@@ -48,17 +48,17 @@ class Explainer:
     _warned: bool = False
 
     def __post_init__(self) -> None:
-        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        api_key = os.environ.get("DEEPSEEK_API_KEY")
         if not api_key:
-            log.info("Gemini API key not set — explanations will use deterministic fallback")
+            log.info("DEEPSEEK_API_KEY not set — explanations will use deterministic fallback")
             return
         try:
-            from google import genai
-            self._client = genai.Client(api_key=api_key)
+            from openai import OpenAI
+            self._client = OpenAI(api_key=api_key, base_url=BASE_URL)
             self._enabled = True
-            log.info("Gemini explainer enabled (%s)", MODEL)
+            log.info("DeepSeek explainer enabled (%s)", MODEL)
         except Exception as e:
-            log.warning("failed to init Gemini client: %s", e)
+            log.warning("failed to init DeepSeek client: %s", e)
 
     async def explain_leader_change(
         self,
@@ -90,23 +90,22 @@ class Explainer:
             f"Simulated time: t={t_seconds:.0f}s\n"
         )
         try:
-            from google.genai import types
-            resp = self._client.models.generate_content(
+            resp = self._client.chat.completions.create(
                 model=MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    temperature=0.4,
-                    max_output_tokens=80,
-                ),
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.4,
+                max_tokens=80,
             )
-            text = (resp.text or "").strip()
+            text = (resp.choices[0].message.content or "").strip()
             if not text:
                 return self._fallback(branch_id, previous_leader, new_leader, cause)
             return text
         except Exception as e:
             if not self._warned:
-                log.warning("Gemini call failed (further warnings suppressed): %s", e)
+                log.warning("DeepSeek call failed (further warnings suppressed): %s", e)
                 self._warned = True
             return self._fallback(branch_id, previous_leader, new_leader, cause)
 

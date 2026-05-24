@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-const HISTORY_LIMIT = 60;
+const HISTORY_LIMIT = 120;   // ~6s at 20Hz — enough to see a fault ramp on the live chart
 const EVENT_LIMIT = 100;
 
 export const useDashboardStore = create((set, get) => ({
@@ -31,6 +31,13 @@ export const useDashboardStore = create((set, get) => ({
             ts: Date.now(),
             kind: "rule",
             text: `${v.valve_id} rule fired: ${v.rule_fired}`,
+          });
+        }
+        if (v.anomaly_detected && (!prev || !prev.anomaly_detected)) {
+          events.push({
+            ts: Date.now(),
+            kind: "anomaly",
+            text: `${v.valve_id} Layer-2 anomaly · conf ${(v.anomaly_confidence * 100).toFixed(0)}%`,
           });
         }
         if (prev && prev.is_leader !== v.is_leader) {
@@ -87,7 +94,16 @@ export const useDashboardStore = create((set, get) => ({
   pushDebate: (msg) => {
     const debates = [...get().debates, msg];
     while (debates.length > 30) debates.shift();   // keep last 30 transcripts
-    set({ debates });
+    const allocSummary = Object.entries(msg.allocations || {})
+      .map(([vid, pos]) => `${vid}=${Number(pos).toFixed(0)}%`)
+      .join(", ");
+    const events = [...get().events, {
+      ts: Date.now(),
+      kind: "debate",
+      text: `branch ${msg.branch_id} debate (${msg.leader_id} leader): ${allocSummary} — ${msg.rationale}`,
+    }];
+    while (events.length > EVENT_LIMIT) events.shift();
+    set({ debates, events });
   },
 
   reset: () => set({ latest: null, history: {}, events: [], debates: [] }),

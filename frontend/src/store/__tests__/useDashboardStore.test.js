@@ -36,11 +36,11 @@ describe("dashboard store", () => {
     expect(history["A1"]).toHaveLength(1);
   });
 
-  it("trims history to 60 ticks per valve", () => {
-    for (let t = 0; t < 70; t++) {
+  it("trims history to 120 ticks per valve", () => {
+    for (let t = 0; t < 140; t++) {
       useDashboardStore.getState().pushSnapshot(snap(t, [valve("A1")]));
     }
-    expect(useDashboardStore.getState().history["A1"]).toHaveLength(60);
+    expect(useDashboardStore.getState().history["A1"]).toHaveLength(120);
   });
 
   it("emits a leader-change event when is_leader toggles", () => {

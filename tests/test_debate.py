@@ -55,7 +55,7 @@ def test_state_fingerprint_distinguishes_different_states():
 
 
 def test_cooldown_blocks_back_to_back_debates(monkeypatch):
-    monkeypatch.setenv("GEMINI_API_KEY", "fake_key_for_init")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "fake_key_for_init")
     r = DebateRunner()
     # First debate at t=0 → recorded.
     r.last_debate_at["A"] = 0.0
@@ -64,8 +64,7 @@ def test_cooldown_blocks_back_to_back_debates(monkeypatch):
 
 
 def test_no_api_key_disables_debate(monkeypatch):
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     r = DebateRunner()
     assert r._enabled is False
     # Without an API key, can_debate is always False — debate never fires.

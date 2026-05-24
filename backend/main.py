@@ -99,6 +99,20 @@ async def set_mode(mode: str) -> StatusResponse:
     return StatusResponse(**app.state.engine.status())
 
 
+@app.post("/scenario/inject_fault", response_model=StatusResponse)
+async def inject_fault(
+    valve_id: str = Query(...),
+    severity: float = Query(..., ge=0.0, le=1.0),
+) -> StatusResponse:
+    try:
+        await app.state.engine.inject_fault(valve_id, severity)
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(409, str(e)) from e
+    return StatusResponse(**app.state.engine.status())
+
+
 @app.post("/agent/{valve_id}/kill_leader", response_model=StatusResponse)
 async def kill_leader(valve_id: str) -> StatusResponse:
     try:
