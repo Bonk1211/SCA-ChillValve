@@ -25,8 +25,16 @@ from backend.explainer import Explainer
 from sim.coil import Coil
 from sim.controllers.belimo_baseline import BelimoController
 from sim.controllers.chillvalve import ChillValveController
+from sim.energy_framework import MeasuredRun, compute as compute_framework
 from sim.scenarios import Scenario
 from sim.system import HydraulicSystem
+
+# Belimo-equivalent reactive threshold for the counterfactual detector:
+# ΔT must fall below this for at least BELIMO_HOLD_S continuously on the
+# faulted valve before "Belimo would have flagged" fires. 4 °C = ~80 % of
+# the 5 °C target, consistent with Delta T Manager's typical alert band.
+BELIMO_DT_THRESHOLD_C = 4.0
+BELIMO_HOLD_S = 300
 
 TICK_PERIOD_S = 0.05         # 20 Hz wall-clock
 OP_FLUSH_INTERVAL_S = 5.0    # flush operational batch every 5 wall-seconds
@@ -75,6 +83,16 @@ class EngineService:
     _dt_compliant_ticks: int = field(default=0, repr=False)
     _dt_total_samples: int = field(default=0, repr=False)
     _summary_emitted: bool = field(default=False, repr=False)
+    # Counterfactual-Belimo detection tracker — runs in parallel with the AI
+    # detector during chillvalve runs so the framework can quote a defensible
+    # detection-latency delta, not a hand-wave. ground-truth onset = first
+    # tick with non-zero fault severity on the targeted valve.
+    _fault_onset_tick: Optional[int] = field(default=None, repr=False)
+    _ai_detect_tick: Optional[int] = field(default=None, repr=False)
+    _belimo_below_start_tick: Optional[int] = field(default=None, repr=False)
+    _belimo_detect_tick: Optional[int] = field(default=None, repr=False)
+    _anom_conf_sum: float = field(default=0.0, repr=False)
+    _anom_conf_count: int = field(default=0, repr=False)
 
     def attach_db_writer(self, writer: Callable[[List[tuple]], None]) -> None:
         self._db_writer = writer
@@ -156,6 +174,12 @@ class EngineService:
         self._dt_compliant_ticks = 0
         self._dt_total_samples = 0
         self._summary_emitted = False
+        self._fault_onset_tick = None
+        self._ai_detect_tick = None
+        self._belimo_below_start_tick = None
+        self._belimo_detect_tick = None
+        self._anom_conf_sum = 0.0
+        self._anom_conf_count = 0
         # Clear LLM-runner per-run state too — otherwise stored last_debate_at
         # from the prior run is way ahead of the new sim_t=0 and can_debate()
         # blocks forever on REPLAY.
@@ -277,6 +301,11 @@ class EngineService:
             self._dt_total_samples += 1
             if abs(v["dT_C"] - 5.0) <= 0.7:
                 self._dt_compliant_ticks += 1
+            # Accumulate mean anomaly confidence across ALL valves so the
+            # framework can dampen self-cal credit on noisy runs.
+            self._anom_conf_sum += float(v.get("anomaly_confidence", 0.0) or 0.0)
+            self._anom_conf_count += 1
+        self._track_counterfactual_belimo(snapshot)
         # Phase transitions.
         if self._energy_phase == "pre_fault":
             if any(v["anomaly_detected"] for v in snapshot["valves"]):
@@ -301,6 +330,75 @@ class EngineService:
                     "energy phase → post_recovery at tick=%d (pump_kw=%.2f)",
                     snapshot["tick"], pump_kw,
                 )
+
+    def _track_counterfactual_belimo(self, snapshot: Dict[str, Any]) -> None:
+        """Per-tick: maintain the parallel "would-Belimo-have-fired" detector
+        for the targeted valve, plus AI detect tick and ground-truth onset.
+
+        The targeted valve is whichever has a non-zero fault_override OR the
+        scenario's fault_target_valve_id. Belimo fires when ΔT has been
+        continuously below BELIMO_DT_THRESHOLD_C for BELIMO_HOLD_S sim-seconds."""
+        scenario = self._scenario
+        if scenario is None:
+            return
+        # Resolve the targeted valve. Prefer runtime override; fall back to scenario.
+        target_vid: Optional[str] = None
+        for vid, sev in self._fault_overrides.items():
+            if sev > 0:
+                target_vid = vid
+                break
+        if target_vid is None:
+            target_vid = scenario.fault_target_valve_id
+        if target_vid is None:
+            return
+        # Ground truth onset — earliest tick we see ANY positive severity on the target.
+        sev = self._fault_overrides.get(
+            target_vid, scenario.fault_severity(target_vid, snapshot["tick"])
+        )
+        if sev > 0 and self._fault_onset_tick is None:
+            self._fault_onset_tick = int(snapshot["tick"])
+        # Find that valve in the snapshot.
+        v = next((x for x in snapshot["valves"] if x["valve_id"] == target_vid), None)
+        if v is None:
+            return
+        # AI detection tick = first tick the targeted valve is flagged after onset.
+        if (
+            self._ai_detect_tick is None
+            and self._fault_onset_tick is not None
+            and v.get("anomaly_detected")
+        ):
+            self._ai_detect_tick = int(snapshot["tick"])
+        # Belimo counterfactual: continuous ΔT under threshold for hold window.
+        dt_c = float(v.get("dT_C", 5.0))
+        if dt_c < BELIMO_DT_THRESHOLD_C:
+            if self._belimo_below_start_tick is None:
+                self._belimo_below_start_tick = int(snapshot["tick"])
+            elif (
+                self._belimo_detect_tick is None
+                and int(snapshot["tick"]) - self._belimo_below_start_tick >= BELIMO_HOLD_S
+            ):
+                self._belimo_detect_tick = int(snapshot["tick"])
+        else:
+            # ΔT recovered — reset the hold window so a future dip starts fresh.
+            self._belimo_below_start_tick = None
+
+    def _classify_fault_type(self) -> Optional[str]:
+        """Map the active scenario to a fault catalog row. Heuristic: scenario
+        name keyword. Demo scenarios that ramp fault_severity on a valve are
+        low-ΔT events (severity throttles flow → return temp drops)."""
+        if self._scenario is None:
+            return None
+        name = self._scenario.name.lower()
+        if "stuck" in name or "actuator" in name:
+            return "stuck_actuator"
+        if "hunt" in name or "oscillat" in name:
+            return "valve_hunting"
+        if "foul" in name:
+            return "coil_fouling"
+        if "air" in name:
+            return "air_binding"
+        # default for fault_severity-ramped scenarios
+        return "low_dT" if self._scenario.fault_target_valve_id else None
 
     async def _emit_summary(self) -> None:
         if self._summary_emitted:
@@ -334,6 +432,34 @@ class EngineService:
             else 0.0
         )
         scenario_name = self._scenario.name if self._scenario else "(unknown)"
+        # Build the framework projection. AI/Belimo latencies are measured
+        # against ground-truth fault onset; if the scenario never injected a
+        # fault these are None and the framework falls back to catalog values.
+        ai_lat = (
+            float(self._ai_detect_tick - self._fault_onset_tick)
+            if self._ai_detect_tick is not None and self._fault_onset_tick is not None
+            else None
+        )
+        belimo_lat = (
+            float(self._belimo_detect_tick - self._fault_onset_tick)
+            if self._belimo_detect_tick is not None and self._fault_onset_tick is not None
+            else None
+        )
+        mean_conf = (
+            self._anom_conf_sum / self._anom_conf_count
+            if self._anom_conf_count > 0 else 0.7
+        )
+        framework = compute_framework(MeasuredRun(
+            duration_s=int(self._tick),
+            mean_kw_pre_fault=mean_pre,
+            mean_kw_during_fault=mean_during,
+            mean_kw_post_recovery=mean_post,
+            recovery_fired=recovery_fired,
+            measured_fault_type=self._classify_fault_type(),
+            ai_detect_latency_s=ai_lat,
+            belimo_counterfactual_latency_s=belimo_lat,
+            mean_anomaly_confidence=mean_conf,
+        )).to_dict()
         msg = {
             "type": "summary",
             "scenario": scenario_name,
@@ -346,6 +472,10 @@ class EngineService:
             "recovery_savings_kw": round(recovery_savings_kw, 3),
             "recovery_savings_kwh": round(recovery_savings_kwh, 4),
             "dt_compliance_pct": round(dt_compliance_pct, 1),
+            "ai_detect_latency_s": ai_lat,
+            "belimo_counterfactual_latency_s": belimo_lat,
+            "mean_anomaly_confidence": round(mean_conf, 3),
+            "framework": framework,
         }
         log.info("scenario summary: %s", msg)
         for q in self._subscribers:

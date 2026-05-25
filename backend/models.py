@@ -1,7 +1,7 @@
 """API schemas for the ChillValve backend."""
 from __future__ import annotations
 
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel
 
@@ -150,3 +150,11 @@ class WSSummaryMessage(BaseModel):
     recovery_savings_kw: float
     recovery_savings_kwh: float
     dt_compliance_pct: float
+    # Energy-savings framework (Step 1–6) — projected annual numbers built on
+    # top of this run's measured per-phase pump_kW + counterfactual Belimo
+    # detection latency. Optional so older summaries (without the framework)
+    # still validate.
+    ai_detect_latency_s: Optional[float] = None
+    belimo_counterfactual_latency_s: Optional[float] = None
+    mean_anomaly_confidence: Optional[float] = None
+    framework: Optional[Dict[str, Any]] = None

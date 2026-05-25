@@ -1,30 +1,8 @@
 import { useEffect, useState } from "react";
 import { useDashboardStore } from "../../store/useDashboardStore";
 
-// End-of-run energy summary, rendered as a modal overlay that pops out when
-// the engine sends a `summary` WS message (orchestrator._emit_summary on
-// natural scenario completion). Numbers are MEASURED per-phase pump_kW —
-// no Belimo comparison, no marketing factor.
-export default function SummaryBanner() {
-  const s = useDashboardStore((st) => st.latestSummary);
-  const [dismissed, setDismissed] = useState(null);
-
-  // Auto-show when a NEW summary arrives. Track by scenario+duration so
-  // hitting REPLAY resets the dismiss state for the next run.
-  const summaryKey = s ? `${s.scenario}|${s.duration_s}` : null;
-  useEffect(() => {
-    if (summaryKey && summaryKey !== dismissed) {
-      // ESC closes
-      const onKey = (e) => e.key === "Escape" && setDismissed(summaryKey);
-      window.addEventListener("keydown", onKey);
-      return () => window.removeEventListener("keydown", onKey);
-    }
-  }, [summaryKey, dismissed]);
-
-  if (!s) return null;
-  if (summaryKey === dismissed) return null;
-
-  const Cell = ({ label, value, unit, accent }) => (
+function Cell({ label, value, unit, accent }) {
+  return (
     <div
       style={{
         flex: 1,
@@ -65,6 +43,30 @@ export default function SummaryBanner() {
       </div>
     </div>
   );
+}
+
+// End-of-run energy summary, rendered as a modal overlay that pops out when
+// the engine sends a `summary` WS message (orchestrator._emit_summary on
+// natural scenario completion). Numbers are MEASURED per-phase pump_kW —
+// no Belimo comparison, no marketing factor.
+export default function SummaryBanner() {
+  const s = useDashboardStore((st) => st.latestSummary);
+  const [dismissed, setDismissed] = useState(null);
+
+  // Auto-show when a NEW summary arrives. Track by scenario+duration so
+  // hitting REPLAY resets the dismiss state for the next run.
+  const summaryKey = s ? `${s.scenario}|${s.duration_s}` : null;
+  useEffect(() => {
+    if (summaryKey && summaryKey !== dismissed) {
+      // ESC closes
+      const onKey = (e) => e.key === "Escape" && setDismissed(summaryKey);
+      window.addEventListener("keydown", onKey);
+      return () => window.removeEventListener("keydown", onKey);
+    }
+  }, [summaryKey, dismissed]);
+
+  if (!s) return null;
+  if (summaryKey === dismissed) return null;
 
   return (
     <div
@@ -221,6 +223,180 @@ export default function SummaryBanner() {
               {s.recovery_savings_kwh.toFixed(3)} kWh
             </span>
             .
+          </div>
+        )}
+
+        {s.framework && (
+          <div
+            style={{
+              marginTop: 4,
+              paddingTop: 14,
+              borderTop: "1px dashed #2d3d5e",
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "baseline",
+                gap: 10,
+                flexWrap: "wrap",
+              }}
+            >
+              <span
+                className="mono"
+                style={{
+                  fontSize: 11,
+                  color: "#0a1224",
+                  background: "#60a5fa",
+                  padding: "3px 10px",
+                  borderRadius: 3,
+                  fontWeight: 700,
+                  letterSpacing: "0.14em",
+                }}
+              >
+                FRAMEWORK · PROJECTED ANNUAL
+              </span>
+              <span
+                className="mono"
+                style={{ fontSize: 11, color: "#9aacc8", fontStyle: "italic" }}
+              >
+                step 1–6, confidence-weighted, low/mid/high band
+              </span>
+            </div>
+
+            <div style={{ display: "flex", gap: 8 }}>
+              <Cell
+                label="NET % vs BASELINE"
+                value={s.framework.net_pct_vs_baseline.toFixed(2)}
+                unit="%"
+                accent={
+                  s.framework.net_pct_vs_baseline >= 4 &&
+                  s.framework.net_pct_vs_baseline <= 7
+                    ? "#34d399"
+                    : "#fbbf24"
+                }
+              />
+              <Cell
+                label="BAND L · M · H"
+                value={`${s.framework.band_low_pct.toFixed(1)} · ${s.framework.band_mid_pct.toFixed(1)} · ${s.framework.band_high_pct.toFixed(1)}`}
+                unit="%"
+              />
+              <Cell
+                label="CONFIDENCE-WEIGHTED"
+                value={s.framework.confidence_weighted_kwh.toFixed(0)}
+                unit={`kWh · w=${s.framework.confidence_weight.toFixed(2)}`}
+                accent="#60a5fa"
+              />
+            </div>
+
+            <div style={{ display: "flex", gap: 8 }}>
+              <Cell
+                label="BASELINE (PUMP, ANNUAL)"
+                value={s.framework.baseline_kwh_annual.toFixed(0)}
+                unit="kWh"
+              />
+              <Cell
+                label="FAULT SAVINGS"
+                value={s.framework.fault_savings_kwh.toFixed(0)}
+                unit="kWh"
+              />
+              <Cell
+                label="DRIFT AVOIDED"
+                value={s.framework.drift_avoided_kwh.toFixed(0)}
+                unit={`kWh · c=${s.framework.drift_confidence.toFixed(2)}`}
+              />
+              <Cell
+                label="OVERHEAD"
+                value={s.framework.overhead_kwh.toFixed(0)}
+                unit="kWh"
+                accent="#f87171"
+              />
+            </div>
+
+            {(s.ai_detect_latency_s != null ||
+              s.belimo_counterfactual_latency_s != null) && (
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "#d1dcec",
+                  background: "#60a5fa12",
+                  border: "1px solid #60a5fa33",
+                  borderRadius: 5,
+                  padding: "8px 12px",
+                  lineHeight: 1.5,
+                }}
+              >
+                Measured detection latency this run · AI:{" "}
+                <span style={{ color: "#34d399", fontWeight: 700 }}>
+                  {s.ai_detect_latency_s != null
+                    ? `${s.ai_detect_latency_s.toFixed(0)} s`
+                    : "—"}
+                </span>{" "}
+                · Belimo counterfactual (ΔT&lt;4 °C for 5 min):{" "}
+                <span style={{ color: "#f87171", fontWeight: 700 }}>
+                  {s.belimo_counterfactual_latency_s != null
+                    ? `${s.belimo_counterfactual_latency_s.toFixed(0)} s`
+                    : "did not fire"}
+                </span>
+                . The framework substitutes these into its{" "}
+                <span className="mono">low_dT</span> row instead of catalog
+                defaults. Confidence weight {" "}
+                {s.framework.confidence_weight.toFixed(2)} = mean
+                anomaly_confidence × (1 − assumed FP rate).
+              </div>
+            )}
+
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 4,
+                background: "#0f1a30",
+                border: "1px solid #2d3d5e",
+                borderRadius: 5,
+                padding: "10px 12px",
+              }}
+            >
+              <div
+                className="mono"
+                style={{
+                  fontSize: 10,
+                  color: "#9aacc8",
+                  letterSpacing: "0.1em",
+                  fontWeight: 600,
+                  marginBottom: 4,
+                }}
+              >
+                PER-FAULT BREAKDOWN
+              </div>
+              {s.framework.per_fault.map((f) => (
+                <div
+                  key={f.name}
+                  className="mono"
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "160px 90px 80px 90px 1fr",
+                    fontSize: 11,
+                    color: f.measured ? "#34d399" : "#d1dcec",
+                    gap: 8,
+                  }}
+                >
+                  <span>
+                    {f.name}
+                    {f.measured ? " ·measured" : ""}
+                  </span>
+                  <span>Δt {f.detect_advantage_s.toFixed(0)} s</span>
+                  <span>{f.power_penalty_kw.toFixed(1)} kW</span>
+                  <span>{f.events_per_year.toFixed(0)} /yr</span>
+                  <span style={{ textAlign: "right" }}>
+                    {f.e_saved_kwh.toFixed(0)} kWh
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
