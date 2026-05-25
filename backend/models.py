@@ -157,4 +157,10 @@ class WSSummaryMessage(BaseModel):
     ai_detect_latency_s: Optional[float] = None
     belimo_counterfactual_latency_s: Optional[float] = None
     mean_anomaly_confidence: Optional[float] = None
+    # Self-cal gate: tick when post-recovery valve flows returned to design
+    # setpoint (±10%, sustained 3 s). The summary modal waits for this before
+    # popping so the judge sees: debate → leader decision → self-cal → result.
+    # None when the convergence gate never tripped (grace cap hit).
+    self_cal_converged_tick: Optional[int] = None
+    self_cal_wait_past_duration_s: Optional[float] = None
     framework: Optional[Dict[str, Any]] = None

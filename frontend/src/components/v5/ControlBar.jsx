@@ -33,9 +33,11 @@ export default function ControlBar({
   onReplay,
   onStart,
   onStop,
+  onShowResult,
   busy,
-  engineState,    // "idle" | "running" | "paused"
-  canReplay,      // false if no scenario picked yet
+  engineState,        // "idle" | "running" | "paused"
+  canReplay,          // false if no scenario picked yet
+  canShowResult,      // false if no summary in store yet
 }) {
   const isRunning = engineState === "running";
   const isPaused = engineState === "paused";
@@ -94,6 +96,24 @@ export default function ControlBar({
         }
       >
         REPLAY
+      </BigButton>
+      <BigButton
+        onClick={onShowResult}
+        color="#34d399"
+        outline
+        disabled={!canShowResult}
+        icon={
+          <svg width="14" height="14" viewBox="0 0 14 14">
+            <rect
+              x="2" y="2" width="10" height="10"
+              fill="none" stroke="#34d399" strokeWidth="1.5"
+            />
+            <line x1="4" y1="6" x2="10" y2="6" stroke="#34d399" strokeWidth="1.5" />
+            <line x1="4" y1="9" x2="8"  y2="9" stroke="#34d399" strokeWidth="1.5" />
+          </svg>
+        }
+      >
+        SHOW RESULT
       </BigButton>
     </div>
   );

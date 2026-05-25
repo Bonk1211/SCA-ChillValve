@@ -9,6 +9,7 @@ import {
   runScenario,
 } from "./components/v5/scenarios";
 import TitleBar from "./components/v5/TitleBar";
+import { demoPlayer } from "./lib/demoPlayer";
 import ScenarioPicker from "./components/v5/ScenarioPicker";
 import KpiTrio from "./components/v5/KpiTrio";
 import FlowChart from "./components/v5/FlowChart";
@@ -100,12 +101,15 @@ function SimulatorApp() {
   const engineStatus = useDashboardStore((s) => s.engineStatus);
   const setEngineStatus = useDashboardStore((s) => s.setEngineStatus);
   const addEvent = useDashboardStore((s) => s.addEvent);
+  const latestSummary = useDashboardStore((s) => s.latestSummary);
+  const showSummary = useDashboardStore((s) => s.showSummary);
 
   const [currentScenarioId, setCurrentScenarioId] = useState(null);
   const [selectedValveId, setSelectedValveId] = useState("B2");
   const [busy, setBusy] = useState(false);
   const [leftOpen, setLeftOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
+  const [demoMode, setDemoMode] = useState(false);
   // Synchronous busy guard — React state takes a commit cycle to propagate, so
   // a rapid double-click on START can fire two pickScenario before the first
   // setBusy(true) renders. This ref updates atomically.
@@ -157,12 +161,26 @@ function SimulatorApp() {
   };
 
   const handleReplay = async () => {
-    if (busyRef.current || !currentScenarioId) return;
+    if (busyRef.current) return;
+    if (demoMode) {
+      demoPlayer.reset();
+      demoPlayer.start();
+      addEvent("ctrl", "demo replayed");
+      return;
+    }
+    if (!currentScenarioId) return;
     await pickScenario(currentScenarioId);
   };
 
   const handleStart = async () => {
     if (busyRef.current) return;
+    if (demoMode) {
+      if (engineStatus.engine === "running") return;
+      demoPlayer.reset();
+      demoPlayer.start();
+      addEvent("ctrl", "demo started");
+      return;
+    }
     if (engineStatus.engine === "paused") {
       busyRef.current = true;
       setBusy(true);
@@ -185,6 +203,11 @@ function SimulatorApp() {
 
   const handleStop = async () => {
     if (busyRef.current) return;
+    if (demoMode) {
+      demoPlayer.stop();
+      addEvent("ctrl", "demo stopped");
+      return;
+    }
     busyRef.current = true;
     setBusy(true);
     try {
@@ -196,6 +219,18 @@ function SimulatorApp() {
       busyRef.current = false;
       setBusy(false);
     }
+  };
+
+  const handleToggleDemoMode = () => {
+    // Stop whatever's running before switching modes to avoid mixed state.
+    if (demoMode) demoPlayer.stop();
+    else if (engineStatus.engine !== "idle") {
+      api.pause().catch(() => {});
+    }
+    useDashboardStore.getState().reset();
+    setDemoMode((m) => !m);
+    setCurrentScenarioId(null);
+    addEvent("ctrl", demoMode ? "switched to LIVE mode" : "switched to DEMO mode");
   };
 
   return (
@@ -214,6 +249,8 @@ function SimulatorApp() {
       <TitleBar
         connection={connection}
         engineStatus={engineStatus}
+        demoMode={demoMode}
+        onToggleDemoMode={handleToggleDemoMode}
       />
       <ScenarioPicker
         currentId={currentScenarioId}
@@ -272,12 +309,14 @@ function SimulatorApp() {
           />
         </div>
 
-        {/* CENTER — schematic on top, debate stage below */}
+        {/* CENTER — schematic fills the column; DebateStage floats over it
+            as an absolute-positioned overlay so collapsing it never resizes
+            the schematic. */}
         <div
           style={{
-            display: "grid",
-            gridTemplateRows: "1fr auto",
-            gap: 6,
+            position: "relative",
+            display: "flex",
+            flexDirection: "column",
             minWidth: 0,
             minHeight: 0,
             overflow: "hidden",
@@ -285,6 +324,7 @@ function SimulatorApp() {
         >
         <div
           style={{
+            flex: 1,
             background: "#0f1a30",
             border: "1px solid #2d3d5e",
             borderRadius: 6,
@@ -331,7 +371,7 @@ function SimulatorApp() {
               <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: "#22d3ee", verticalAlign: "middle", marginRight: 4, boxShadow: "0 0 4px #22d3ee" }} />leader</span>
             </div>
           </div>
-          <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "flex-start", justifyContent: "center", overflow: "hidden" }}>
             <Schematic
               selectedValveId={selectedValveId}
               onSelectValve={setSelectedValveId}
@@ -339,7 +379,26 @@ function SimulatorApp() {
           </div>
         </div>
         <SummaryBanner />
-        <DebateStage />
+        <div
+          style={{
+            position: "absolute",
+            left: 12,
+            right: 12,
+            bottom: 12,
+            zIndex: 5,
+            maxHeight: "calc(100% - 24px)",
+            overflow: "auto",
+            background: "rgba(10, 18, 36, 0.92)",
+            backdropFilter: "blur(6px)",
+            WebkitBackdropFilter: "blur(6px)",
+            border: "1px solid #2d3d5e",
+            borderRadius: 6,
+            padding: 6,
+            boxShadow: "0 -8px 24px rgba(0, 0, 0, 0.45)",
+          }}
+        >
+          <DebateStage />
+        </div>
         </div>
 
         {/* RIGHT — valve table + event log */}
@@ -407,9 +466,11 @@ function SimulatorApp() {
         onReplay={handleReplay}
         onStart={handleStart}
         onStop={handleStop}
+        onShowResult={showSummary}
         busy={busy}
         engineState={engineStatus.engine}
         canReplay={currentScenarioId != null}
+        canShowResult={!!latestSummary}
       />
     </div>
   );

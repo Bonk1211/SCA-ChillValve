@@ -12,9 +12,15 @@ export const useDashboardStore = create((set, get) => ({
   engineStatus: { engine: "idle", tick: 0, scenario: null, mode: null },
   latestRemediation: null,
   latestSummary: null,
+  // User-controlled visibility for the SummaryBanner modal. Set true by the
+  // "SHOW RESULT" button in ControlBar; cleared by close/ESC/backdrop and by
+  // reset() so REPLAY hides any stale modal.
+  summaryVisible: false,
 
   setConnection: (c) => set({ connection: c }),
   setEngineStatus: (s) => set({ engineStatus: s }),
+  showSummary: () => set({ summaryVisible: true }),
+  hideSummary: () => set({ summaryVisible: false }),
 
   pushSnapshot: (snap) => {
     const state = get();
@@ -140,5 +146,6 @@ export const useDashboardStore = create((set, get) => ({
       debates: [],
       latestRemediation: null,
       latestSummary: null,
+      summaryVisible: false,
     }),
 }));

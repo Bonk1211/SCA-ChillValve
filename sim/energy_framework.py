@@ -110,6 +110,19 @@ class FrameworkResult:
     band_low_pct: float = 0.0
     band_mid_pct: float = 0.0
     band_high_pct: float = 0.0
+    # Honest-engineering split: coil_fouling row uses a 69-day catalog
+    # detection advantage that no reasonable demo run can validate. Headline
+    # numbers exclude it; the fouling kWh is exposed separately so the UI can
+    # gate it behind an explicit "unvalidated" badge.
+    coil_fouling_kwh: float = 0.0
+    fault_savings_excl_fouling_kwh: float = 0.0
+    gross_savings_excl_fouling_kwh: float = 0.0
+    net_savings_excl_fouling_kwh: float = 0.0
+    net_pct_excl_fouling: float = 0.0
+    confidence_weighted_excl_fouling_kwh: float = 0.0
+    band_low_pct_excl_fouling: float = 0.0
+    band_mid_pct_excl_fouling: float = 0.0
+    band_high_pct_excl_fouling: float = 0.0
 
     def to_dict(self) -> Dict:
         d = asdict(self)
@@ -213,10 +226,11 @@ def compute(
     res.confidence_weighted_kwh = res.net_savings_kwh * res.confidence_weight
 
     # Sensitivity bands: scale each fault line's events_per_year by its band factor.
-    def _band_pct(idx: int) -> float:
+    def _band_pct(idx: int, exclude_fouling: bool = False) -> float:
         fault = sum(
             line.e_saved_kwh * row.band_factors[idx]
             for row, line in zip(catalog, res.per_fault)
+            if not (exclude_fouling and line.name == "coil_fouling")
         )
         gross = fault + res.drift_avoided_kwh
         net = gross - res.overhead_kwh
@@ -226,4 +240,29 @@ def compute(
     res.band_low_pct = _band_pct(0)
     res.band_mid_pct = _band_pct(1)
     res.band_high_pct = _band_pct(2)
+
+    # ---- Split fouling out for the defensible headline -------------------
+    fouling_line = next(
+        (f for f in res.per_fault if f.name == "coil_fouling"), None
+    )
+    res.coil_fouling_kwh = fouling_line.e_saved_kwh if fouling_line else 0.0
+    res.fault_savings_excl_fouling_kwh = (
+        res.fault_savings_kwh - res.coil_fouling_kwh
+    )
+    res.gross_savings_excl_fouling_kwh = (
+        res.fault_savings_excl_fouling_kwh + res.drift_avoided_kwh
+    )
+    res.net_savings_excl_fouling_kwh = (
+        res.gross_savings_excl_fouling_kwh - res.overhead_kwh
+    )
+    res.net_pct_excl_fouling = (
+        100.0 * res.net_savings_excl_fouling_kwh / res.baseline_kwh_annual
+        if res.baseline_kwh_annual > 0 else 0.0
+    )
+    res.confidence_weighted_excl_fouling_kwh = (
+        res.net_savings_excl_fouling_kwh * res.confidence_weight
+    )
+    res.band_low_pct_excl_fouling = _band_pct(0, exclude_fouling=True)
+    res.band_mid_pct_excl_fouling = _band_pct(1, exclude_fouling=True)
+    res.band_high_pct_excl_fouling = _band_pct(2, exclude_fouling=True)
     return res

@@ -35,6 +35,10 @@ from sim.system import HydraulicSystem
 # the 5 °C target, consistent with Delta T Manager's typical alert band.
 BELIMO_DT_THRESHOLD_C = 4.0
 BELIMO_HOLD_S = 300
+# Post-recovery convergence gate (see _accumulate_energy + _loop).
+POST_RECOVERY_FLOW_TOL = 0.10      # ±10% of design_flow_gpm = "back at setpoint"
+POST_RECOVERY_HOLD_S = 3           # consecutive sim-seconds within tol
+POST_RECOVERY_MAX_GRACE_S = 30     # hard cap on extra wait past duration_s
 
 TICK_PERIOD_S = 0.05         # 20 Hz wall-clock
 OP_FLUSH_INTERVAL_S = 5.0    # flush operational batch every 5 wall-seconds
@@ -93,6 +97,13 @@ class EngineService:
     _belimo_detect_tick: Optional[int] = field(default=None, repr=False)
     _anom_conf_sum: float = field(default=0.0, repr=False)
     _anom_conf_count: int = field(default=0, repr=False)
+    # Post-recovery convergence gate. After L3 fires attempt_actuator_reset,
+    # the summary modal waits until valve flow_gpm returns to within
+    # POST_RECOVERY_FLOW_TOL of design for POST_RECOVERY_HOLD_S consecutive
+    # ticks (= the system finished self-calibrating). Hard-capped by
+    # POST_RECOVERY_MAX_GRACE_S past scenario duration so we never hang.
+    _post_recovery_converge_streak: int = field(default=0, repr=False)
+    _post_recovery_converged_tick: Optional[int] = field(default=None, repr=False)
 
     def attach_db_writer(self, writer: Callable[[List[tuple]], None]) -> None:
         self._db_writer = writer
@@ -180,6 +191,8 @@ class EngineService:
         self._belimo_detect_tick = None
         self._anom_conf_sum = 0.0
         self._anom_conf_count = 0
+        self._post_recovery_converge_streak = 0
+        self._post_recovery_converged_tick = None
         # Clear LLM-runner per-run state too — otherwise stored last_debate_at
         # from the prior run is way ahead of the new sim_t=0 and can_debate()
         # blocks forever on REPLAY.
@@ -251,7 +264,7 @@ class EngineService:
     async def _loop(self) -> None:
         assert self._scenario is not None
         self._last_flush_at = time.monotonic()
-        while not self._stop.is_set() and self._tick < self._scenario.duration_seconds:
+        while not self._stop.is_set() and not self._ready_to_emit_summary():
             if self._paused.is_set():
                 await asyncio.sleep(0.05)
                 continue
@@ -281,6 +294,26 @@ class EngineService:
         # what L3 recovery saved, computed from per-tick pump_kW samples.
         if not self._stop.is_set():
             await self._emit_summary()
+
+    def _ready_to_emit_summary(self) -> bool:
+        """Loop exit + summary gate. Returns True when the scenario has both
+        played to duration AND the system has finished self-calibrating
+        (post-recovery flows back at setpoint). Hard cap past duration so the
+        loop never hangs if convergence never lands."""
+        if self._scenario is None:
+            return True
+        if self._tick < self._scenario.duration_seconds:
+            return False
+        # Past duration. If we never entered post_recovery (no fault or no
+        # recovery), nothing to wait for.
+        if self._energy_phase != "post_recovery":
+            return True
+        # In post_recovery — wait for convergence or grace cap.
+        if self._post_recovery_converged_tick is not None:
+            return True
+        return self._tick >= (
+            self._scenario.duration_seconds + POST_RECOVERY_MAX_GRACE_S
+        )
 
     def _accumulate_energy(self, snapshot: Dict[str, Any]) -> None:
         """Per-tick: integrate pump_kWh and bucket pump_kW into the current
@@ -326,10 +359,43 @@ class EngineService:
             )
             if reset_fired and no_active_anomaly:
                 self._energy_phase = "post_recovery"
+                # Reset the convergence streak so the gate starts watching
+                # from this tick onward, not from stale pre-recovery state.
+                self._post_recovery_converge_streak = 0
+                self._post_recovery_converged_tick = None
                 log.info(
                     "energy phase → post_recovery at tick=%d (pump_kw=%.2f)",
                     snapshot["tick"], pump_kw,
                 )
+        # Convergence watch — once post_recovery, track whether all valve
+        # flows have returned to within ±POST_RECOVERY_FLOW_TOL of their
+        # design_flow_gpm. POST_RECOVERY_HOLD_S consecutive ticks marks the
+        # system "self-calibrated"; the loop then permits the summary emit.
+        if (
+            self._energy_phase == "post_recovery"
+            and self._post_recovery_converged_tick is None
+            and self._system is not None
+        ):
+            all_at_setpoint = True
+            for v in snapshot["valves"]:
+                rec = self._system.valves.get(v["valve_id"])
+                design = float(rec.coil.design_flow_gpm) if rec else 0.0
+                if design <= 0:
+                    continue
+                err = abs(float(v["flow_gpm"]) - design) / design
+                if err > POST_RECOVERY_FLOW_TOL:
+                    all_at_setpoint = False
+                    break
+            if all_at_setpoint:
+                self._post_recovery_converge_streak += 1
+                if self._post_recovery_converge_streak >= POST_RECOVERY_HOLD_S:
+                    self._post_recovery_converged_tick = int(snapshot["tick"])
+                    log.info(
+                        "post-recovery flow convergence at tick=%d (streak=%d)",
+                        snapshot["tick"], self._post_recovery_converge_streak,
+                    )
+            else:
+                self._post_recovery_converge_streak = 0
 
     def _track_counterfactual_belimo(self, snapshot: Dict[str, Any]) -> None:
         """Per-tick: maintain the parallel "would-Belimo-have-fired" detector
@@ -460,6 +526,15 @@ class EngineService:
             belimo_counterfactual_latency_s=belimo_lat,
             mean_anomaly_confidence=mean_conf,
         )).to_dict()
+        # Self-cal timing: tick where post-recovery flow returned to within
+        # POST_RECOVERY_FLOW_TOL of design for POST_RECOVERY_HOLD_S in a row.
+        # None means the convergence gate never tripped (loop hit grace cap).
+        self_cal_tick = self._post_recovery_converged_tick
+        self_cal_wait_s = (
+            float(self_cal_tick - self._scenario.duration_seconds)
+            if self_cal_tick is not None and self_cal_tick > self._scenario.duration_seconds
+            else 0.0
+        )
         msg = {
             "type": "summary",
             "scenario": scenario_name,
@@ -475,6 +550,8 @@ class EngineService:
             "ai_detect_latency_s": ai_lat,
             "belimo_counterfactual_latency_s": belimo_lat,
             "mean_anomaly_confidence": round(mean_conf, 3),
+            "self_cal_converged_tick": self_cal_tick,
+            "self_cal_wait_past_duration_s": round(self_cal_wait_s, 1),
             "framework": framework,
         }
         log.info("scenario summary: %s", msg)

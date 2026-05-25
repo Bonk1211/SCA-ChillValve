@@ -1,7 +1,14 @@
-export default function TitleBar({ connection, engineStatus }) {
+export default function TitleBar({
+  connection,
+  engineStatus,
+  demoMode = false,
+  onToggleDemoMode,
+}) {
   const connColor =
     { connected: "#34d399", connecting: "#fbbf24", disconnected: "#f87171" }[connection] ||
     "#9aacc8";
+  const modeLabel = demoMode ? "DEMO" : "LIVE";
+  const modeColor = demoMode ? "#fbbf24" : "#22d3ee";
   return (
     <div
       style={{
@@ -58,7 +65,10 @@ export default function TitleBar({ connection, engineStatus }) {
                 letterSpacing: "0.08em",
               }}
             >
-              AUTONOMOUS SCENARIO DEMO · v5 · LIVE
+              AUTONOMOUS SCENARIO DEMO · v5 ·{" "}
+              <span style={{ color: modeColor, fontWeight: 700 }}>
+                {modeLabel}
+              </span>
             </span>
           </div>
           <div
@@ -71,6 +81,43 @@ export default function TitleBar({ connection, engineStatus }) {
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+        {onToggleDemoMode && (
+          <button
+            onClick={onToggleDemoMode}
+            className="mono"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              background: "transparent",
+              border: `1.5px solid ${modeColor}`,
+              borderRadius: 4,
+              padding: "3px 8px",
+              cursor: "pointer",
+              fontFamily: "monospace",
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: "0.12em",
+              color: modeColor,
+            }}
+            title={demoMode ? "Click to switch to LIVE (real backend)" : "Click to switch to DEMO (hardcoded perfect run)"}
+          >
+            <span
+              style={{
+                display: "inline-flex",
+                background: modeColor,
+                color: "#0a1224",
+                padding: "1px 5px",
+                borderRadius: 2,
+                fontSize: 10,
+                marginRight: 4,
+              }}
+            >
+              {modeLabel}
+            </span>
+            ⇄ {demoMode ? "live" : "demo"}
+          </button>
+        )}
         <span
           className="mono"
           style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#d1dcec" }}
@@ -80,11 +127,11 @@ export default function TitleBar({ connection, engineStatus }) {
               width: 8,
               height: 8,
               borderRadius: "50%",
-              background: connColor,
-              boxShadow: `0 0 6px ${connColor}`,
+              background: demoMode ? "#fbbf24" : connColor,
+              boxShadow: `0 0 6px ${demoMode ? "#fbbf24" : connColor}`,
             }}
           />
-          ws · {connection}
+          {demoMode ? "player · scripted" : `ws · ${connection}`}
         </span>
         <span className="mono" style={{ fontSize: 11, color: "#9aacc8" }}>
           engine · {engineStatus.engine}

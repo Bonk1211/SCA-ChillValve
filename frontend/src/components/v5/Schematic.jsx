@@ -147,7 +147,7 @@ export default function Schematic({ selectedValveId, onSelectValve }) {
     7.0 + valves.reduce((s, v) => s + v.dT_C * v.flow_gpm, 0) / Math.max(1, total_flow_gpm);
 
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet" style={{ width: "100%", height: "100%", maxHeight: "100%", display: "block" }}>
+    <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMin meet" style={{ width: "100%", height: "100%", maxHeight: "100%", display: "block" }}>
       <g fontFamily="JetBrains Mono, monospace" fontSize="9" fill="#9aacc8">
         <text x="20" y="24">// CHILLED WATER LOOP · 5MW TIER 3</text>
         <text x={W - 20} y="24" textAnchor="end">P&amp;ID · LIVE</text>
