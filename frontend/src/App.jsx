@@ -18,6 +18,31 @@ import EventLog from "./components/v5/EventLog";
 import DebateStage from "./components/v5/DebateStage";
 import SummaryBanner from "./components/v5/SummaryBanner";
 import ControlBar from "./components/v5/ControlBar";
+import Landing from "./components/landing/Landing";
+
+// Hash-based view switcher. "#/simulator" → SimulatorApp; otherwise Landing.
+// Kept simple instead of pulling in react-router for a single transition.
+function readView() {
+  return typeof window !== "undefined" && window.location.hash === "#/simulator"
+    ? "simulator"
+    : "landing";
+}
+
+export default function App() {
+  const [view, setView] = useState(readView);
+  useEffect(() => {
+    const onHash = () => setView(readView());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+  const enterSimulator = () => {
+    window.location.hash = "#/simulator";
+    setView("simulator");
+  };
+  return view === "simulator"
+    ? <SimulatorApp />
+    : <Landing onEnter={enterSimulator} />;
+}
 
 const POLL_HEALTH_MS = 2000;
 
@@ -69,7 +94,7 @@ function SidebarHandle({ side, open, onToggle, label }) {
   );
 }
 
-export default function App() {
+function SimulatorApp() {
   useWebSocket("ws://localhost:8000/ws");
   const connection = useDashboardStore((s) => s.connection);
   const engineStatus = useDashboardStore((s) => s.engineStatus);
@@ -172,8 +197,6 @@ export default function App() {
       setBusy(false);
     }
   };
-
-  const currentScenario = currentScenarioId ? SCENARIO_BY_ID[currentScenarioId] : null;
 
   return (
     <div

@@ -15,6 +15,32 @@ export default function TitleBar({ connection, engineStatus }) {
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <a
+          href="#"
+          onClick={(e) => {
+            e.preventDefault();
+            // Clearing the hash with `=""` doesn't always dispatch hashchange
+            // (browsers may consider "" → "" a no-op). Fire it explicitly.
+            const had = window.location.hash !== "";
+            window.location.hash = "";
+            if (!had) {
+              window.dispatchEvent(new HashChangeEvent("hashchange"));
+            }
+          }}
+          className="mono"
+          title="back to intro"
+          style={{
+            fontSize: 10,
+            color: "#9aacc8",
+            letterSpacing: "0.12em",
+            textDecoration: "none",
+            padding: "2px 6px",
+            borderRadius: 3,
+            border: "1px solid #2d3d5e",
+          }}
+        >
+          ← intro
+        </a>
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
           <path d="M12 2 L20 7 L20 17 L12 22 L4 17 L4 7 Z" stroke="#22d3ee" strokeWidth="1.5" />
           <circle cx="12" cy="12" r="3.5" fill="#22d3ee" />
